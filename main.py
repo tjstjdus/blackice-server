@@ -961,6 +961,7 @@ def debug_weather(
     nx, ny = dfs_xy_conv(lat, lon)
 
     if mode == "current":
+        target_time = target_time.replace(minute=0, second=0, microsecond=0)
         tm = target_time.strftime("%Y%m%d%H%M")
 
         params = {
