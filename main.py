@@ -785,13 +785,26 @@ def predict(req: PredictRequest):
             debug=False
         )
 
+        clean_result_json = []
+
+        for row in result_json:
+            clean_row = {}
+
+            for key, value in row.items():
+                if pd.isna(value):
+                    clean_row[key] = None
+                else:
+                    clean_row[key] = value
+
+            clean_result_json.append(clean_row)
+
         return {
             "status": "success",
             "target_time": target_time_str,
             "province": req.province,
             "city": req.city,
-            "count": len(result_json),
-            "results": result_json
+            "count": len(clean_result_json),
+            "results": clean_result_json
         }
 
     except Exception as e:
