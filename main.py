@@ -383,7 +383,7 @@ def fetch_future_weather(lat, lon, target_time):
     
     print("미래 API 응답 원문:")
     print(r.text[:1000])
-    
+
     r.raise_for_status()
 
     result = {
@@ -818,8 +818,10 @@ def predict(req: PredictRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
 
 @app.get("/debug-weather")
+
 def debug_weather(
     lat: float = 37.5665,
     lon: float = 126.9780,
@@ -867,5 +869,4 @@ def debug_weather(
         "ny": ny,
         "request_url": r.url,
         "status_code": r.status_code,
-        "raw_text_first_2000": r.text[:2000]
-    }
+        "raw_text_first_2000": r.text[:2000]}
