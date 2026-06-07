@@ -1,5 +1,3 @@
-from fastapi.middleware.cors import CORSMiddleware
-
 import os
 from datetime import datetime, timedelta, timezone
 
