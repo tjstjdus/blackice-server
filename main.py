@@ -818,3 +818,54 @@ def predict(req: PredictRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug-weather")
+def debug_weather(
+    lat: float = 37.5665,
+    lon: float = 126.9780,
+    mode: str = "current",
+    date: str = "2026-06-08",
+    time: str = "12:00"
+):
+    target_time = parse_target_time(f"{date} {time}")
+    nx, ny = dfs_xy_conv(lat, lon)
+
+    if mode == "current":
+        tm = target_time.strftime("%Y%m%d%H%M")
+
+        params = {
+            "tm": tm,
+            "nx": nx,
+            "ny": ny,
+            "authKey": KMA_API_KEY
+        }
+
+        url = CURRENT_URL
+
+    else:
+        tm = datetime.now(KST).strftime("%Y%m%d%H%M")
+        tmef = target_time.strftime("%Y%m%d%H%M")
+
+        params = {
+            "tm": tm,
+            "tmef": tmef,
+            "nx": nx,
+            "ny": ny,
+            "authKey": KMA_API_KEY
+        }
+
+        url = FUTURE_URL
+
+    r = requests.get(url, params=params, timeout=30)
+
+    return {
+        "mode": mode,
+        "target_time": f"{date} {time}",
+        "lat": lat,
+        "lon": lon,
+        "nx": nx,
+        "ny": ny,
+        "request_url": r.url,
+        "status_code": r.status_code,
+        "raw_text_first_2000": r.text[:2000]
+    }
