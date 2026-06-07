@@ -1,3 +1,5 @@
+from fastapi.middleware.cors import CORSMiddleware
+
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -33,14 +35,19 @@ FUTURE_URL = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-dfs_shrt_grd"
 
 
 app = FastAPI(title="Black Ice Prediction API")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://tjstjdus.github.io",
+        "http://127.0.0.1:5500",
+        "http://localhost:5500"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 
 class PredictRequest(BaseModel):
