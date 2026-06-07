@@ -28,8 +28,8 @@ BLACKICE_FEATURE_FILE = os.path.join(BASE_DIR, "models", "blackice_feature_cols.
 KMA_API_KEY = os.getenv("KMA_API_KEY", "9jV6iWFlSeC1eolhZdngjw")
 
 PAST_URL = "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
-CURRENT_URL = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-dfs_odam_grd"
-FUTURE_URL = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-dfs_shrt_grd"
+CURRENT_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
+FUTURE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtFcst"
 
 
 app = FastAPI(title="Black Ice Prediction API")
@@ -306,10 +306,65 @@ def fetch_past_asos_all(target_time):
 
     return df
 
-
+import xml.etree.ElementTree as ET
 def fetch_current_weather(lat, lon, target_time):
     nx, ny = dfs_xy_conv(lat, lon)
-    tm = target_time.strftime("%Y%m%d%H%M")
+
+    # 초단기실황은 보통 매시 40분 이후 안정적으로 조회됨
+    # 그래서 현재 요청시각보다 1시간 전 정시 기준으로 조회
+    base_time = target_time - timedelta(hours=1)
+    base_date = base_time.strftime("%Y%m%d")
+    base_hhmm = base_time.strftime("%H00")
+
+    params = {
+        "pageNo": 1,
+        "numOfRows": 1000,
+        "dataType": "XML",
+        "base_date": base_date,
+        "base_time": base_hhmm,
+        "nx": nx,
+        "ny": ny,
+        "authKey": KMA_API_KEY
+    }
+
+    r = requests.get(CURRENT_URL, params=params, timeout=30)
+    r.raise_for_status()
+
+    root = ET.fromstring(r.text)
+
+    result = {
+        "기온": np.nan,
+        "습도": np.nan,
+        "풍속": np.nan,
+        "강수량": 0.0,
+        "지면온도": np.nan
+    }
+
+    for item in root.iter("item"):
+        category = item.findtext("category")
+        value = item.findtext("obsrValue")
+
+        if value is None:
+            continue
+
+        try:
+            value = float(value)
+        except Exception:
+            continue
+
+        if category == "T1H":
+            result["기온"] = value
+
+        elif category == "REH":
+            result["습도"] = value
+
+        elif category == "WSD":
+            result["풍속"] = value
+
+        elif category == "RN1":
+            result["강수량"] = value
+
+    return result
     
 
     params = {
@@ -362,12 +417,85 @@ def fetch_current_weather(lat, lon, target_time):
 
     return result
 
+import xml.etree.ElementTree as ET
+def get_ultra_srt_fcst_base_time():
+    now = datetime.now(KST)
 
+    # 초단기예보는 매시 30분 발표 기준
+    if now.minute < 45:
+        base = now - timedelta(hours=1)
+    else:
+        base = now
+
+    base = base.replace(minute=30, second=0, microsecond=0)
+
+    return base
 def fetch_future_weather(lat, lon, target_time):
     nx, ny = dfs_xy_conv(lat, lon)
 
-    tm = datetime.now(KST).strftime("%Y%m%d%H%M")
-    tmef = target_time.strftime("%Y%m%d%H%M")
+    base_time = get_ultra_srt_fcst_base_time()
+
+    base_date = base_time.strftime("%Y%m%d")
+    base_hhmm = base_time.strftime("%H%M")
+
+    target_forecast_time = target_time.replace(minute=0, second=0, microsecond=0)
+    fcst_date = target_forecast_time.strftime("%Y%m%d")
+    fcst_time = target_forecast_time.strftime("%H%M")
+
+    params = {
+        "pageNo": 1,
+        "numOfRows": 1000,
+        "dataType": "XML",
+        "base_date": base_date,
+        "base_time": base_hhmm,
+        "nx": nx,
+        "ny": ny,
+        "authKey": KMA_API_KEY
+    }
+
+    r = requests.get(FUTURE_URL, params=params, timeout=30)
+    r.raise_for_status()
+
+    root = ET.fromstring(r.text)
+
+    result = {
+        "기온": np.nan,
+        "습도": np.nan,
+        "풍속": np.nan,
+        "강수량": 0.0,
+        "지면온도": np.nan
+    }
+
+    for item in root.iter("item"):
+        category = item.findtext("category")
+        item_fcst_date = item.findtext("fcstDate")
+        item_fcst_time = item.findtext("fcstTime")
+        value = item.findtext("fcstValue")
+
+        if item_fcst_date != fcst_date or item_fcst_time != fcst_time:
+            continue
+
+        if value is None:
+            continue
+
+        if value == "강수없음":
+            value = 0
+
+        try:
+            value = float(value)
+        except Exception:
+            continue
+
+        if category == "T1H":
+            result["기온"] = value
+        elif category == "REH":
+            result["습도"] = value
+        elif category == "WSD":
+            result["풍속"] = value
+        elif category == "RN1":
+            result["강수량"] = value
+
+    return result
     
 
     params = {
