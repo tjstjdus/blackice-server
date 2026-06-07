@@ -310,6 +310,7 @@ def fetch_past_asos_all(target_time):
 def fetch_current_weather(lat, lon, target_time):
     nx, ny = dfs_xy_conv(lat, lon)
     tm = target_time.strftime("%Y%m%d%H%M")
+    
 
     params = {
         "tm": tm,
@@ -319,6 +320,8 @@ def fetch_current_weather(lat, lon, target_time):
     }
 
     r = requests.get(CURRENT_URL, params=params, timeout=30)
+    print("현재 API 응답 원문:")
+    print(r.text[:1000])
     r.raise_for_status()
 
     result = {
@@ -365,6 +368,7 @@ def fetch_future_weather(lat, lon, target_time):
 
     tm = datetime.now(KST).strftime("%Y%m%d%H%M")
     tmef = target_time.strftime("%Y%m%d%H%M")
+    
 
     params = {
         "tm": tm,
@@ -375,6 +379,11 @@ def fetch_future_weather(lat, lon, target_time):
     }
 
     r = requests.get(FUTURE_URL, params=params, timeout=30)
+
+    
+    print("미래 API 응답 원문:")
+    print(r.text[:1000])
+    
     r.raise_for_status()
 
     result = {
