@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
 
 import joblib
 import requests
@@ -13,7 +14,6 @@ from sklearn.neighbors import BallTree
 
 
 KST = timezone(timedelta(hours=9))
-
 BASE_DIR = "."
 
 TERRAIN_FILE = os.path.join(BASE_DIR, "data", "결빙_비결빙_전국데이터(최종).csv")
@@ -33,6 +33,7 @@ FUTURE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2
 
 
 app = FastAPI(title="Black Ice Prediction API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -44,8 +45,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
 
 
 class PredictRequest(BaseModel):
@@ -100,17 +99,11 @@ def clean_weather_missing_values(df):
             df[col] = df[col].replace([-9, -9.0, -99, -99.0, -999, -999.0], np.nan)
 
     if "강수량" in df.columns:
-        df["강수량"] = df["강수량"].replace(
-            [-9, -9.0, -99, -99.0, -999, -999.0],
-            np.nan
-        )
+        df["강수량"] = df["강수량"].replace([-9, -9.0, -99, -99.0, -999, -999.0], np.nan)
         df["강수량"] = df["강수량"].fillna(0)
 
     if "지면온도" in df.columns:
-        df["지면온도"] = df["지면온도"].replace(
-            [-9, -9.0, -99, -99.0, -999, -999.0],
-            np.nan
-        )
+        df["지면온도"] = df["지면온도"].replace([-9, -9.0, -99, -99.0, -999, -999.0], np.nan)
 
     if "풍속" in df.columns:
         df["풍속"] = df["풍속"].fillna(0)
@@ -122,6 +115,64 @@ def clean_weather_missing_values(df):
         df["습도"] = df["습도"].fillna(hum_median)
 
     return df
+
+
+def parse_target_time(target_time_str):
+    target_time = datetime.strptime(target_time_str, "%Y-%m-%d %H:%M")
+    return target_time.replace(tzinfo=KST)
+
+
+def get_time_type(target_time):
+    now = datetime.now(KST)
+
+    if target_time < now - timedelta(hours=2):
+        return "past"
+    elif target_time <= now + timedelta(minutes=30):
+        return "current"
+    else:
+        return "future"
+
+
+def dfs_xy_conv(lat, lon):
+    RE = 6371.00877
+    GRID = 5.0
+    SLAT1 = 30.0
+    SLAT2 = 60.0
+    OLON = 126.0
+    OLAT = 38.0
+    XO = 43
+    YO = 136
+
+    DEGRAD = np.pi / 180.0
+
+    re = RE / GRID
+    slat1 = SLAT1 * DEGRAD
+    slat2 = SLAT2 * DEGRAD
+    olon = OLON * DEGRAD
+    olat = OLAT * DEGRAD
+
+    sn = np.log(np.cos(slat1) / np.cos(slat2)) / np.log(
+        np.tan(np.pi * 0.25 + slat2 * 0.5)
+        / np.tan(np.pi * 0.25 + slat1 * 0.5)
+    )
+
+    sf = (np.tan(np.pi * 0.25 + slat1 * 0.5) ** sn) * np.cos(slat1) / sn
+    ro = re * sf / (np.tan(np.pi * 0.25 + olat * 0.5) ** sn)
+    ra = re * sf / (np.tan(np.pi * 0.25 + lat * DEGRAD * 0.5) ** sn)
+
+    theta = lon * DEGRAD - olon
+
+    if theta > np.pi:
+        theta -= 2.0 * np.pi
+    if theta < -np.pi:
+        theta += 2.0 * np.pi
+
+    theta *= sn
+
+    nx = int(ra * np.sin(theta) + XO + 0.5)
+    ny = int(ro - ra * np.cos(theta) + YO + 0.5)
+
+    return nx, ny
 
 
 def attach_nearest_asos(terrain_df, asos_meta_df):
@@ -178,77 +229,8 @@ def attach_nearest_asos(terrain_df, asos_meta_df):
     return terrain
 
 
-def dfs_xy_conv(lat, lon):
-    RE = 6371.00877
-    GRID = 5.0
-    SLAT1 = 30.0
-    SLAT2 = 60.0
-    OLON = 126.0
-    OLAT = 38.0
-    XO = 43
-    YO = 136
-
-    DEGRAD = np.pi / 180.0
-
-    re = RE / GRID
-
-    slat1 = SLAT1 * DEGRAD
-    slat2 = SLAT2 * DEGRAD
-
-    olon = OLON * DEGRAD
-    olat = OLAT * DEGRAD
-
-    sn = np.log(np.cos(slat1) / np.cos(slat2)) / np.log(
-        np.tan(np.pi * 0.25 + slat2 * 0.5)
-        /
-        np.tan(np.pi * 0.25 + slat1 * 0.5)
-    )
-
-    sf = (
-        np.tan(np.pi * 0.25 + slat1 * 0.5) ** sn
-    ) * np.cos(slat1) / sn
-
-    ro = re * sf / (
-        np.tan(np.pi * 0.25 + olat * 0.5) ** sn
-    )
-
-    ra = re * sf / (
-        np.tan(np.pi * 0.25 + lat * DEGRAD * 0.5) ** sn
-    )
-
-    theta = lon * DEGRAD - olon
-
-    if theta > np.pi:
-        theta -= 2.0 * np.pi
-
-    if theta < -np.pi:
-        theta += 2.0 * np.pi
-
-    theta *= sn
-
-    nx = int(ra * np.sin(theta) + XO + 0.5)
-    ny = int(ro - ra * np.cos(theta) + YO + 0.5)
-
-    return nx, ny
-
-
-def parse_target_time(target_time_str):
-    target_time = datetime.strptime(target_time_str, "%Y-%m-%d %H:%M")
-    return target_time.replace(tzinfo=KST)
-
-
-def get_time_type(target_time):
-    now = datetime.now(KST)
-
-    if target_time < now - timedelta(hours=2):
-        return "past"
-    elif target_time <= now + timedelta(minutes=30):
-        return "current"
-    else:
-        return "future"
-
-
 def fetch_past_asos_all(target_time):
+    target_time = target_time.replace(minute=0, second=0, microsecond=0)
     tm = target_time.strftime("%Y%m%d%H%M")
 
     params = {
@@ -306,13 +288,13 @@ def fetch_past_asos_all(target_time):
 
     return df
 
-import xml.etree.ElementTree as ET
+
 def fetch_current_weather(lat, lon, target_time):
     nx, ny = dfs_xy_conv(lat, lon)
 
-    # 초단기실황은 보통 매시 40분 이후 안정적으로 조회됨
-    # 그래서 현재 요청시각보다 1시간 전 정시 기준으로 조회
     base_time = target_time - timedelta(hours=1)
+    base_time = base_time.replace(minute=0, second=0, microsecond=0)
+
     base_date = base_time.strftime("%Y%m%d")
     base_hhmm = base_time.strftime("%H00")
 
@@ -354,82 +336,28 @@ def fetch_current_weather(lat, lon, target_time):
 
         if category == "T1H":
             result["기온"] = value
-
         elif category == "REH":
             result["습도"] = value
-
         elif category == "WSD":
             result["풍속"] = value
-
         elif category == "RN1":
             result["강수량"] = value
 
     return result
-    
 
-    params = {
-        "tm": tm,
-        "nx": nx,
-        "ny": ny,
-        "authKey": KMA_API_KEY
-    }
 
-    r = requests.get(CURRENT_URL, params=params, timeout=30)
-    print("현재 API 응답 원문:")
-    print(r.text[:1000])
-    r.raise_for_status()
-
-    result = {
-        "기온": np.nan,
-        "습도": np.nan,
-        "풍속": np.nan,
-        "강수량": 0.0,
-        "지면온도": np.nan
-    }
-
-    for line in r.text.splitlines():
-        line = line.strip()
-
-        if not line or line.startswith("#"):
-            continue
-
-        parts = line.split()
-
-        if len(parts) < 2:
-            continue
-
-        cat = parts[0]
-        val = parts[-1]
-
-        try:
-            val = float(val)
-        except Exception:
-            continue
-
-        if cat in ["T1H", "TA", "TMP"]:
-            result["기온"] = val
-        elif cat in ["REH", "HM"]:
-            result["습도"] = val
-        elif cat in ["WSD", "WS"]:
-            result["풍속"] = val
-        elif cat in ["RN1", "RN", "PCP"]:
-            result["강수량"] = val
-
-    return result
-
-import xml.etree.ElementTree as ET
 def get_ultra_srt_fcst_base_time():
     now = datetime.now(KST)
 
-    # 초단기예보는 매시 30분 발표 기준
     if now.minute < 45:
         base = now - timedelta(hours=1)
     else:
         base = now
 
     base = base.replace(minute=30, second=0, microsecond=0)
-
     return base
+
+
 def fetch_future_weather(lat, lon, target_time):
     nx, ny = dfs_xy_conv(lat, lon)
 
@@ -439,6 +367,7 @@ def fetch_future_weather(lat, lon, target_time):
     base_hhmm = base_time.strftime("%H%M")
 
     target_forecast_time = target_time.replace(minute=0, second=0, microsecond=0)
+
     fcst_date = target_forecast_time.strftime("%Y%m%d")
     fcst_time = target_forecast_time.strftime("%H%M")
 
@@ -496,61 +425,6 @@ def fetch_future_weather(lat, lon, target_time):
             result["강수량"] = value
 
     return result
-    
-
-    params = {
-        "tm": tm,
-        "tmef": tmef,
-        "nx": nx,
-        "ny": ny,
-        "authKey": KMA_API_KEY
-    }
-
-    r = requests.get(FUTURE_URL, params=params, timeout=30)
-
-    
-    print("미래 API 응답 원문:")
-    print(r.text[:1000])
-
-    r.raise_for_status()
-
-    result = {
-        "기온": np.nan,
-        "습도": np.nan,
-        "풍속": np.nan,
-        "강수량": 0.0,
-        "지면온도": np.nan
-    }
-
-    for line in r.text.splitlines():
-        line = line.strip()
-
-        if not line or line.startswith("#"):
-            continue
-
-        parts = line.split()
-
-        if len(parts) < 2:
-            continue
-
-        cat = parts[0]
-        val = parts[-1]
-
-        try:
-            val = float(val)
-        except Exception:
-            continue
-
-        if cat in ["T1H", "TA", "TMP"]:
-            result["기온"] = val
-        elif cat in ["REH", "HM"]:
-            result["습도"] = val
-        elif cat in ["WSD", "WS"]:
-            result["풍속"] = val
-        elif cat in ["RN1", "RN", "PCP"]:
-            result["강수량"] = val
-
-    return result
 
 
 def add_estimated_road_surface_temp(df):
@@ -559,7 +433,6 @@ def add_estimated_road_surface_temp(df):
     for col in ["기온", "풍속", "강수량", "지면온도"]:
         if col not in df.columns:
             df[col] = np.nan
-
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["지면온도"] = df["지면온도"].fillna(df["기온"])
@@ -718,7 +591,7 @@ def build_realtime_weather_dataset(
                 "기온": np.nan,
                 "습도": np.nan,
                 "풍속": np.nan,
-                "강수량": np.nan,
+                "강수량": 0.0,
                 "지면온도": np.nan
             })
 
@@ -750,7 +623,7 @@ def build_realtime_weather_dataset(
                     "기온": np.nan,
                     "습도": np.nan,
                     "풍속": np.nan,
-                    "강수량": np.nan,
+                    "강수량": 0.0,
                     "지면온도": np.nan
                 }
 
@@ -946,56 +819,3 @@ def predict(req: PredictRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-
-@app.get("/debug-weather")
-
-def debug_weather(
-    lat: float = 37.5665,
-    lon: float = 126.9780,
-    mode: str = "current",
-    date: str = "2026-06-08",
-    time: str = "12:00"
-):
-    target_time = parse_target_time(f"{date} {time}")
-    nx, ny = dfs_xy_conv(lat, lon)
-
-    if mode == "current":
-        target_time = target_time.replace(minute=0, second=0, microsecond=0)
-        tm = target_time.strftime("%Y%m%d%H%M")
-
-        params = {
-            "tm": tm,
-            "nx": nx,
-            "ny": ny,
-            "authKey": KMA_API_KEY
-        }
-
-        url = CURRENT_URL
-
-    else:
-        tm = datetime.now(KST).strftime("%Y%m%d%H%M")
-        tmef = target_time.strftime("%Y%m%d%H%M")
-
-        params = {
-            "tm": tm,
-            "tmef": tmef,
-            "nx": nx,
-            "ny": ny,
-            "authKey": KMA_API_KEY
-        }
-
-        url = FUTURE_URL
-
-    r = requests.get(url, params=params, timeout=30)
-
-    return {
-        "mode": mode,
-        "target_time": f"{date} {time}",
-        "lat": lat,
-        "lon": lon,
-        "nx": nx,
-        "ny": ny,
-        "request_url": r.url,
-        "status_code": r.status_code,
-        "raw_text_first_2000": r.text[:2000]}
