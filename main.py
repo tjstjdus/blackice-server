@@ -1,19 +1,51 @@
+```python
 # ============================================
 # main.py
 # ============================================
 
 import os
+import glob
+import math
 import joblib
 import requests
 import numpy as np
 import pandas as pd
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from sklearn.neighbors import BallTree
+
+
+# ============================================
+# FastAPI
+# ============================================
+
+app = FastAPI()
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "*"
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================
+# 시간
+# ============================================
+
+KST = timezone(
+    timedelta(hours=9)
+)
+
 
 # ============================================
 # 기본 경로
@@ -22,6 +54,74 @@ from sklearn.neighbors import BallTree
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
+
+
+# ============================================
+# API KEY
+# ============================================
+
+KMA_API_KEY = os.getenv(
+    "KMA_API_KEY",
+    "여기에_API_KEY"
+)
+
+
+# ============================================
+# 기상청 API
+# ============================================
+
+PAST_URL = \
+    "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
+
+
+# ============================================
+# 파일 찾기
+# ============================================
+
+def find_file(patterns):
+
+    for pattern in patterns:
+
+        files = glob.glob(
+            os.path.join(BASE_DIR, pattern)
+        )
+
+        files += glob.glob(
+            os.path.join(BASE_DIR, "data", pattern)
+        )
+
+        files += glob.glob(
+            os.path.join(BASE_DIR, "models", pattern)
+        )
+
+        if files:
+            return files[0]
+
+    raise FileNotFoundError(
+        f"파일을 찾을 수 없습니다: {patterns}"
+    )
+
+
+DATA_PATH = find_file([
+    "결빙_비결빙_전국데이터*.csv"
+])
+
+META_PATH = find_file([
+    "META_관측지점정보*.csv"
+])
+
+ICING_MODEL_PATH = find_file([
+    "결빙확률모델*.pkl"
+])
+
+BLACKICE_MODEL_PATH = find_file([
+    "블랙아이스확률모델*.pkl"
+])
+
+
+# ============================================
+# CSV 읽기
+# ============================================
 
 def read_csv_safe(path):
 
@@ -48,197 +148,148 @@ def read_csv_safe(path):
         f"CSV 인코딩 읽기 실패: {path}"
     )
 
-DATA_PATH = os.path.join(
-    BASE_DIR,
-    "data",
-    "결빙_비결빙_전국데이터(최종).csv"
-)
-
-META_PATH = os.path.join(
-    BASE_DIR,
-    "data",
-    "META_관측지점정보.csv"
-)
-
-ICING_MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "결빙확률모델.pkl"
-)
-
-BLACKICE_MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "블랙아이스확률모델.pkl"
-)
-
-# ============================================
-# 기상청 API
-# ============================================
-
-KMA_API_KEY = "9jV6iWFlSeC1eolhZdngjw"
-
-PAST_URL = (
-    "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
-)
-
-# ============================================
-# FastAPI
-# ============================================
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://tjstjdus.github.io",
-        "http://localhost:3000",
-        "http://127.0.0.1:5500"
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ============================================
-# 모델 로드 함수
-# ============================================
-
-def get_model_and_features(obj):
-
-    if isinstance(obj, dict):
-
-        model = obj["model"]
-
-        if "features" in obj:
-
-            features = list(
-                obj["features"]
-            )
-
-        elif hasattr(
-            model,
-            "feature_names_in_"
-        ):
-
-            features = list(
-                model.feature_names_in_
-            )
-
-        else:
-
-            features = list(
-                model.get_booster().feature_names
-            )
-
-        return model, features
-
-    model = obj
-
-    if hasattr(
-        model,
-        "feature_names_in_"
-    ):
-
-        features = list(
-            model.feature_names_in_
-        )
-
-    else:
-
-        features = list(
-            model.get_booster().feature_names
-        )
-
-    return model, features
-
-# ============================================
-# 모델 불러오기
-# ============================================
-
-icing_obj = joblib.load(
-    ICING_MODEL_PATH
-)
-
-blackice_obj = joblib.load(
-    BLACKICE_MODEL_PATH
-)
-
-icing_model, icing_features = \
-    get_model_and_features(
-        icing_obj
-    )
-
-blackice_model, blackice_features = \
-    get_model_and_features(
-        blackice_obj
-    )
 
 # ============================================
 # 데이터 로드
 # ============================================
 
 base_df = read_csv_safe(DATA_PATH)
+
 meta_df = read_csv_safe(META_PATH)
 
-def attach_nearest_asos(base_df, meta_df):
+
+# ============================================
+# 최근접 ASOS 연결
+# ============================================
+
+def attach_nearest_asos(
+    base_df,
+    meta_df
+):
+
     base_df = base_df.copy()
+
     meta_df = meta_df.copy()
 
-    meta_df = meta_df.rename(columns={
-        "지점": "asos_id",
-        "지점명": "asos_name",
-        "위도": "asos_lat",
-        "경도": "asos_lon"
-    })
+    meta_df = meta_df.rename(
+        columns={
+            "지점": "asos_id",
+            "지점명": "asos_name",
+            "위도": "asos_lat",
+            "경도": "asos_lon"
+        }
+    )
 
-    base_df["위도"] = pd.to_numeric(base_df["위도"], errors="coerce")
-    base_df["경도"] = pd.to_numeric(base_df["경도"], errors="coerce")
+    base_df["위도"] = pd.to_numeric(
+        base_df["위도"],
+        errors="coerce"
+    )
 
-    meta_df["asos_id"] = pd.to_numeric(meta_df["asos_id"], errors="coerce")
-    meta_df["asos_lat"] = pd.to_numeric(meta_df["asos_lat"], errors="coerce")
-    meta_df["asos_lon"] = pd.to_numeric(meta_df["asos_lon"], errors="coerce")
+    base_df["경도"] = pd.to_numeric(
+        base_df["경도"],
+        errors="coerce"
+    )
 
-    base_df = base_df.dropna(subset=["위도", "경도"]).reset_index(drop=True)
-    meta_df = meta_df.dropna(subset=["asos_id", "asos_lat", "asos_lon"]).reset_index(drop=True)
+    meta_df["asos_id"] = pd.to_numeric(
+        meta_df["asos_id"],
+        errors="coerce"
+    )
 
-    base_rad = np.radians(base_df[["위도", "경도"]].values)
-    meta_rad = np.radians(meta_df[["asos_lat", "asos_lon"]].values)
+    meta_df["asos_lat"] = pd.to_numeric(
+        meta_df["asos_lat"],
+        errors="coerce"
+    )
 
-    tree = BallTree(meta_rad, metric="haversine")
-    dist, idx = tree.query(base_rad, k=1)
+    meta_df["asos_lon"] = pd.to_numeric(
+        meta_df["asos_lon"],
+        errors="coerce"
+    )
+
+    base_df = base_df.dropna(
+        subset=["위도", "경도"]
+    ).reset_index(drop=True)
+
+    meta_df = meta_df.dropna(
+        subset=[
+            "asos_id",
+            "asos_lat",
+            "asos_lon"
+        ]
+    ).reset_index(drop=True)
+
+    base_rad = np.radians(
+        base_df[["위도", "경도"]].values
+    )
+
+    meta_rad = np.radians(
+        meta_df[["asos_lat", "asos_lon"]].values
+    )
+
+    tree = BallTree(
+        meta_rad,
+        metric="haversine"
+    )
+
+    dist, idx = tree.query(
+        base_rad,
+        k=1
+    )
 
     earth_radius_km = 6371.0088
-    matched = meta_df.iloc[idx[:, 0]].reset_index(drop=True)
 
-    base_df["asos_id"] = matched["asos_id"].astype(int).values
-    base_df["asos_name"] = matched["asos_name"].values
-    base_df["asos_distance_m"] = dist[:, 0] * earth_radius_km * 1000
-    base_df["aws_거리_km"] = dist[:, 0] * earth_radius_km
+    matched = meta_df.iloc[
+        idx[:, 0]
+    ].reset_index(drop=True)
+
+    base_df["asos_id"] = \
+        matched["asos_id"].astype(int).values
+
+    base_df["asos_name"] = \
+        matched["asos_name"].values
+
+    base_df["asos_distance_m"] = \
+        dist[:, 0] * earth_radius_km * 1000
+
+    base_df["aws_거리_km"] = \
+        dist[:, 0] * earth_radius_km
 
     return base_df
-    
-base_df = attach_nearest_asos(base_df, meta_df)
-# ============================================
-# 숫자형 변환
-# ============================================
 
-if "asos_id" in base_df.columns:
 
-    base_df["asos_id"] = pd.to_numeric(
-        base_df["asos_id"],
-        errors="coerce"
-    )
+base_df = attach_nearest_asos(
+    base_df,
+    meta_df
+)
 
-if "지점" in meta_df.columns:
-
-    meta_df["지점"] = pd.to_numeric(
-        meta_df["지점"],
-        errors="coerce"
-    )
 
 # ============================================
-# 지역 목록 생성
+# 모델 로드
+# ============================================
+
+icing_model = joblib.load(
+    ICING_MODEL_PATH
+)
+
+blackice_model = joblib.load(
+    BLACKICE_MODEL_PATH
+)
+
+
+# ============================================
+# feature
+# ============================================
+
+icing_features = list(
+    icing_model.feature_names_in_
+)
+
+blackice_features = list(
+    blackice_model.feature_names_in_
+)
+
+
+# ============================================
+# 지역 목록
 # ============================================
 
 regions = {}
@@ -257,22 +308,45 @@ for province in sorted(
 
     regions[province] = cities
 
+
 # ============================================
-# 입력 스키마
+# Request
 # ============================================
 
 class PredictRequest(BaseModel):
 
     date: str
+
     time: str
 
     province: str
+
     city: str
 
     max_points: int = 20
 
+
 # ============================================
-# feature 정리
+# 위험도
+# ============================================
+
+def make_risk_level(prob):
+
+    if prob >= 0.7:
+        return "매우 높음"
+
+    elif prob >= 0.4:
+        return "높음"
+
+    elif prob >= 0.2:
+        return "주의"
+
+    else:
+        return "낮음"
+
+
+# ============================================
+# 모델 입력 생성
 # ============================================
 
 def make_model_input(
@@ -280,572 +354,157 @@ def make_model_input(
     feature_cols
 ):
 
-    X = pd.DataFrame(
-        index=df.index
-    )
+    X = pd.DataFrame()
 
     for col in feature_cols:
 
         if col in df.columns:
 
-            X[col] = df[col]
+            X[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            ).fillna(0)
 
         else:
 
             X[col] = 0
 
-    for col in X.columns:
-
-        X[col] = pd.to_numeric(
-            X[col],
-            errors="coerce"
-        )
-
-    X = X.replace(
-        [np.inf, -np.inf],
-        np.nan
-    )
-
-    X = X.fillna(
-        X.median(
-            numeric_only=True
-        )
-    ).fillna(0)
-
     return X
 
-# ============================================
-# 위험등급
-# ============================================
-
-def make_risk_level(prob):
-
-    if prob >= 0.8:
-        return "매우 위험"
-
-    elif prob >= 0.6:
-        return "위험"
-
-    elif prob >= 0.3:
-        return "주의"
-
-    else:
-        return "낮음"
 
 # ============================================
-# 기상 API 호출
+# JSON 정리
 # ============================================
 
-def fetch_weather_data(
-    target_time
-):
-
-    target_time = target_time.replace(
-        minute=0,
-        second=0,
-        microsecond=0
-    )
-
-    tm = target_time.strftime(
-        "%Y%m%d%H%M"
-    )
-
-    params = {
-
-        "tm": tm,
-        "stn": 0,
-        "help": 0,
-
-        "authKey":
-            KMA_API_KEY
-    }
-
-    response = requests.get(
-        PAST_URL,
-        params=params,
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    rows = []
-
-    for line in response.text.splitlines():
-
-        line = line.strip()
-
-        if (
-            not line
-            or line.startswith("#")
-            or line.startswith("7777")
-        ):
-            continue
-
-        parts = line.split()
-
-        if len(parts) < 36:
-            continue
-
-        rows.append(parts)
-
-    weather = []
-
-    for p in rows:
-
-        weather.append({
-
-            "datetime": p[0],
-
-            "asos_id": p[1],
-
-            "풍향": p[2],
-            "풍속": p[3],
-
-            "기온": p[11],
-            "습도": p[13],
-
-            "강수량": p[15],
-
-            "지면온도": p[35]
-        })
-
-    weather_df = pd.DataFrame(
-        weather
-    )
-    print(weather_df.columns.tolist())
-    print(weather_df.head())
-
-    if weather_df.empty:
-        return weather_df
-
-    weather_df["datetime"] = \
-        pd.to_datetime(
-
-            weather_df["datetime"],
-
-            format="%Y%m%d%H%M",
-
-            errors="coerce"
-        )
-
-    numeric_cols = [
-
-        "asos_id",
-
-        "풍향",
-        "풍속",
-
-        "기온",
-        "습도",
-
-        "강수량",
-        "지면온도"
-    ]
-
-    for col in numeric_cols:
-
-        weather_df[col] = \
-            pd.to_numeric(
-
-                weather_df[col],
-
-                errors="coerce"
-            )
-
-    weather_df = weather_df.replace(
-        [-99, -99.0, -999, -999.0],
-        np.nan
-    )
-
-    weather_df["강수량"] = \
-        weather_df["강수량"].fillna(0)
-
-    return weather_df
-
-# ============================================
-# 지역 목록 API
-# ============================================
-
-@app.get("/regions")
-
-def get_regions():
-
-    return {
-
-        "status": "success",
-
-        "regions": regions
-    }
-
-# ============================================
-# 예측 API
-# ============================================
 def clean_json_value(value):
+
     if pd.isna(value):
         return None
 
-    if isinstance(value, (np.float32, np.float64)):
+    if isinstance(
+        value,
+        (
+            np.float32,
+            np.float64
+        )
+    ):
         return float(value)
 
-    if isinstance(value, (np.int32, np.int64)):
+    if isinstance(
+        value,
+        (
+            np.int32,
+            np.int64
+        )
+    ):
         return int(value)
 
     return value
 
 
 def dataframe_to_json_records(df):
-    records = df.to_dict(orient="records")
+
+    records = df.to_dict(
+        orient="records"
+    )
+
     clean_records = []
 
     for row in records:
+
         clean_row = {}
 
         for key, value in row.items():
-            clean_row[key] = clean_json_value(value)
 
-        clean_records.append(clean_row)
+            clean_row[key] = \
+                clean_json_value(value)
+
+        clean_records.append(
+            clean_row
+        )
 
     return clean_records
 
 
-@app.post("/predict")
-def predict(req: PredictRequest):
+# ============================================
+# 기상 데이터
+# ============================================
 
-    target_time = datetime.strptime(
-        f"{req.date} {req.time}",
-        "%Y-%m-%d %H:%M"
+def fetch_weather_data(target_time):
+
+    tm = target_time.strftime(
+        "%Y%m%d%H00"
     )
 
-    # 중간 예측 코드들
-    # weather_df 만들기
-    # selected_df 만들기
-    # merged 만들기
-    # 결빙 확률 계산
-
-    merged["blackice_model_probability"] = \
-        blackice_model.predict_proba(
-            X_blackice
-        )[:, 1]
-
-    merged["blackice_model_probability_percent"] = \
-        merged["blackice_model_probability"] * 100
-
-    merged["blackice_probability"] = \
-        merged["icing_probability"] * \
-        merged["blackice_model_probability"]
-
-    merged["blackice_probability_percent"] = \
-        merged["blackice_probability"] * 100
-
-    merged["blackice_predicted_label"] = \
-        (
-            merged["blackice_probability"] >= 0.5
-        ).astype(int)
-
-    # result_df 만드는 코드
-
-    return {
-        "status": "success",
-        "target_time": target_time.strftime("%Y-%m-%d %H:%M"),
-        "province": req.province,
-        "city": req.city,
-        "count": len(result_df),
-        "results": dataframe_to_json_records(result_df)
+    params = {
+        "tm": tm,
+        "stn": "0",
+        "help": "0",
+        "authKey": KMA_API_KEY
     }
 
-    # =====================================
-    # 기상 데이터
-    # =====================================
+    try:
 
-    weather_df = fetch_weather_data(
-        target_time
-    )
-
-    if weather_df.empty:
-
-        return {
-
-            "status": "error",
-
-            "message":
-                "기상 데이터 없음"
-        }
-
-    # =====================================
-    # 지역 필터링
-    # =====================================
-
-    selected_df = base_df[
-
-        (base_df["시도"] == req.province)
-
-        &
-
-        (base_df["시군구"] == req.city)
-
-    ].copy()
-
-    print(req.province)
-    print(req.city)
-    
-    print(base_df["시도"].unique()[:20])
-    print(base_df["시군구"].unique()[:20])
-    
-    print(selected_df.shape)
-
-    if selected_df.empty:
-
-        return {
-
-            "status": "error",
-
-            "message":
-                "지역 데이터 없음"
-        }
-
-    # =====================================
-    # 최대 개수
-    # =====================================
-
-    selected_df = selected_df.head(
-        req.max_points
-    )
-
-        # =====================================
-    # ASOS ID 컬럼명 / 타입 정리
-    # =====================================
-
-    if "stn" in weather_df.columns:
-        weather_df = weather_df.rename(
-            columns={"stn": "asos_id"}
+        response = requests.get(
+            PAST_URL,
+            params=params,
+            timeout=30
         )
 
-    if "stnId" in weather_df.columns:
-        weather_df = weather_df.rename(
-            columns={"stnId": "asos_id"}
+        response.raise_for_status()
+
+        text = response.text
+
+        lines = text.split("\n")
+
+        rows = []
+
+        for line in lines:
+
+            if line.startswith("#"):
+                continue
+
+            if len(line.strip()) == 0:
+                continue
+
+            parts = line.split()
+
+            if len(parts) < 12:
+                continue
+
+            try:
+
+                rows.append({
+                    "asos_id": parts[0],
+                    "기온": parts[11],
+                    "풍향": parts[3],
+                    "풍속": parts[4],
+                    "습도": parts[13],
+                    "강수량": parts[15],
+                    "지면온도": parts[38]
+                })
+
+            except:
+                continue
+
+        weather_df = pd.DataFrame(
+            rows
         )
 
-    if "지점" in weather_df.columns:
-        weather_df = weather_df.rename(
-            columns={"지점": "asos_id"}
+        return weather_df
+
+    except Exception as e:
+
+        print(
+            "기상청 API 오류:",
+            str(e)
         )
 
-    selected_df["asos_id"] = (
-        selected_df["asos_id"]
-        .astype(float)
-        .astype(int)
-        .astype(str)
-    )
+        return pd.DataFrame()
 
-    weather_df["asos_id"] = (
-        weather_df["asos_id"]
-        .astype(float)
-        .astype(int)
-        .astype(str)
-    )
-    # =====================================
-    # 기상 merge
-    # =====================================
-
-    merged = pd.merge(
-
-        selected_df,
-
-        weather_df,
-
-        on="asos_id",
-
-        how="left"
-    )
-
-    # =====================================
-    # 추정 노면온도
-    # =====================================
-
-    merged["추정노면온도"] = (
-
-        merged["기온"]
-
-        -
-
-        (merged["풍속"] * 0.7)
-
-        -
-
-        (
-            (100 - merged["습도"])
-            * 0.03
-        )
-    )
-
-    # =====================================
-    # 결빙 확률
-    # =====================================
-
-    X_icing = make_model_input(
-
-        merged,
-
-        icing_features
-    )
-
-    merged["icing_probability"] = \
-        icing_model.predict_proba(
-            X_icing
-        )[:, 1]
-
-    merged["icing_probability_percent"] = \
-        merged["icing_probability"] * 100
-
-    merged["icing_predicted_label"] = \
-        (
-            merged["icing_probability"]
-            >= 0.5
-        ).astype(int)
-
-    # =====================================
-    # 블랙아이스용 결빙확률 컬럼
-    # =====================================
-
-    merged["결빙확률"] = \
-        merged["icing_probability"]
-
-    # =====================================
-    # 블랙아이스 확률
-    # =====================================
-
-    X_blackice = make_model_input(
-
-        merged,
-
-        blackice_features
-    )
-
-    merged["blackice_model_probability"] = \
-        blackice_model.predict_proba(
-            X_blackice
-        )[:, 1]
-    
-        merged["blackice_model_probability_percent"] = \
-            merged["blackice_model_probability"] * 100
-        
-        merged["blackice_probability"] = \
-            merged["icing_probability"] * \
-            merged["blackice_model_probability"]
-        
-        merged["blackice_probability_percent"] = \
-            merged["blackice_probability"] * 100
-    
-        merged["blackice_probability_percent"] = \
-            merged["blackice_probability"] * 100
-    
-        merged["blackice_predicted_label"] = \
-            (
-                merged["blackice_probability"]
-                >= 0.5
-            ).astype(int)
-
-    # =====================================
-    # 위험등급
-    # =====================================
-
-    merged["risk_level"] = \
-        merged[
-            "blackice_probability"
-        ].apply(
-            make_risk_level
-        )
-
-    # =====================================
-    # 결과 컬럼
-    # =====================================
-
-    result_cols = [
-
-        "fid",
-
-        "시도",
-        "시군구",
-        "읍면동",
-
-        "위도",
-        "경도",
-
-        "asos_id",
-        "asos_name",
-        "asos_distance_m",
-        "aws_거리_km",
-
-        "datetime",
-
-        "기온",
-        "습도",
-        "풍향",
-        "풍속",
-
-        "강수량",
-        "지면온도",
-        "추정노면온도",
-
-        "icing_probability",
-        "icing_probability_percent",
-        "icing_predicted_label",
-
-        "blackice_probability",
-        "blackice_probability_percent",
-        "blackice_predicted_label",
-
-        "blackice_model_probability",
-        "blackice_model_probability_percent",
-
-        "risk_level"
-    ]
-
-    result_cols = [
-
-        col for col in result_cols
-
-        if col in merged.columns
-    ]
-
-    result_df = merged[
-        result_cols
-    ].copy()
-
-    result_df = result_df.replace(
-        [np.inf, -np.inf],
-        np.nan
-    )
-
-    result_df = result_df.where(
-        pd.notnull(result_df),
-        None
-    )
-
-
-    return {
-
-        "status": "success",
-
-        "target_time":
-            target_time.strftime(
-                "%Y-%m-%d %H:%M"
-            ),
-
-        "province":
-            req.province,
-
-        "city":
-            req.city,
-
-        "count":
-            len(result_df),
-
-        "results": dataframe_to_json_records(result_df)
-    }
 
 # ============================================
-# 기본 API
+# 루트
 # ============================================
 
 @app.get("/")
@@ -853,7 +512,269 @@ def predict(req: PredictRequest):
 def root():
 
     return {
-
-        "message":
-            "Black Ice Forecast API is running"
+        "status": "success",
+        "message": "Black Ice API Server"
     }
+
+
+# ============================================
+# 지역 API
+# ============================================
+
+@app.get("/regions")
+
+def get_regions():
+
+    return {
+        "status": "success",
+        "regions": regions
+    }
+
+
+# ============================================
+# 예측 API
+# ============================================
+
+@app.post("/predict")
+
+def predict(req: PredictRequest):
+
+    try:
+
+        target_time = datetime.strptime(
+            f"{req.date} {req.time}",
+            "%Y-%m-%d %H:%M"
+        )
+
+        weather_df = fetch_weather_data(
+            target_time
+        )
+
+        if weather_df.empty:
+
+            return {
+                "status": "error",
+                "message": "기상 데이터 없음",
+                "results": []
+            }
+
+        selected_df = base_df[
+            (base_df["시도"] == req.province)
+            &
+            (base_df["시군구"] == req.city)
+        ].copy()
+
+        if selected_df.empty:
+
+            return {
+                "status": "error",
+                "message": "지역 데이터 없음",
+                "results": []
+            }
+
+        selected_df = selected_df.head(
+            req.max_points
+        )
+
+        selected_df["asos_id"] = \
+            selected_df["asos_id"].astype(str)
+
+        weather_df["asos_id"] = \
+            weather_df["asos_id"].astype(str)
+
+        merged = pd.merge(
+            selected_df,
+            weather_df,
+            on="asos_id",
+            how="left"
+        )
+
+        numeric_cols = [
+            "기온",
+            "습도",
+            "풍향",
+            "풍속",
+            "강수량",
+            "지면온도"
+        ]
+
+        for col in numeric_cols:
+
+            if col in merged.columns:
+
+                merged[col] = pd.to_numeric(
+                    merged[col],
+                    errors="coerce"
+                )
+
+        merged["풍속"] = \
+            merged["풍속"].fillna(0)
+
+        merged["강수량"] = \
+            merged["강수량"].fillna(0)
+
+        merged["습도"] = \
+            merged["습도"].fillna(
+                merged["습도"].median()
+            )
+
+        merged["지면온도"] = \
+            merged["지면온도"].fillna(
+                merged["기온"]
+            )
+
+        merged["추정노면온도"] = (
+            0.7 * merged["기온"]
+            + 0.2 * merged["지면온도"]
+            - 0.3 * merged["풍속"]
+            - 0.1 * merged["강수량"]
+        )
+
+        # =====================================
+        # 결빙 예측
+        # =====================================
+
+        X_icing = make_model_input(
+            merged,
+            icing_features
+        )
+
+        merged["icing_probability"] = \
+            icing_model.predict_proba(
+                X_icing
+            )[:, 1]
+
+        merged["icing_probability_percent"] = \
+            merged["icing_probability"] * 100
+
+        merged["icing_predicted_label"] = \
+            (
+                merged["icing_probability"]
+                >= 0.5
+            ).astype(int)
+
+        # =====================================
+        # 블랙아이스 예측
+        # =====================================
+
+        X_blackice = make_model_input(
+            merged,
+            blackice_features
+        )
+
+        merged["blackice_model_probability"] = \
+            blackice_model.predict_proba(
+                X_blackice
+            )[:, 1]
+
+        merged["blackice_model_probability_percent"] = \
+            merged["blackice_model_probability"] * 100
+
+        merged["blackice_probability"] = \
+            (
+                merged["icing_probability"]
+                *
+                merged["blackice_model_probability"]
+            )
+
+        merged["blackice_probability_percent"] = \
+            merged["blackice_probability"] * 100
+
+        merged["blackice_predicted_label"] = \
+            (
+                merged["blackice_probability"]
+                >= 0.5
+            ).astype(int)
+
+        merged["risk_level"] = \
+            merged[
+                "blackice_probability"
+            ].apply(make_risk_level)
+
+        # =====================================
+        # 결과
+        # =====================================
+
+        result_cols = [
+
+            "시도",
+            "시군구",
+            "읍면동",
+
+            "위도",
+            "경도",
+
+            "asos_id",
+            "asos_name",
+
+            "기온",
+            "습도",
+            "풍향",
+            "풍속",
+            "강수량",
+            "지면온도",
+            "추정노면온도",
+
+            "icing_probability",
+            "icing_probability_percent",
+
+            "blackice_model_probability",
+            "blackice_model_probability_percent",
+
+            "blackice_probability",
+            "blackice_probability_percent",
+
+            "risk_level"
+        ]
+
+        result_cols = [
+            c for c in result_cols
+            if c in merged.columns
+        ]
+
+        result_df = merged[
+            result_cols
+        ].copy()
+
+        result_df = result_df.replace(
+            [np.inf, -np.inf],
+            np.nan
+        )
+
+        return {
+
+            "status": "success",
+
+            "target_time":
+                target_time.strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+
+            "province":
+                req.province,
+
+            "city":
+                req.city,
+
+            "count":
+                len(result_df),
+
+            "results":
+                dataframe_to_json_records(
+                    result_df
+                )
+        }
+
+    except Exception as e:
+
+        print(
+            "PREDICT ERROR:",
+            str(e)
+        )
+
+        return {
+            "status": "error",
+            "message": str(e),
+            "results": []
+        }
+```
