@@ -628,10 +628,20 @@ def predict(
         blackice_features
     )
 
+    merged["blackice_model_probability"] = \
+    blackice_model.predict_proba(
+        X_blackice
+    )[:, 1]
+
+    merged["blackice_model_probability_percent"] = \
+        merged["blackice_model_probability"] * 100
+    
     merged["blackice_probability"] = \
-        blackice_model.predict_proba(
-            X_blackice
-        )[:, 1]
+        merged["icing_probability"] * \
+        merged["blackice_model_probability"]
+    
+    merged["blackice_probability_percent"] = \
+        merged["blackice_probability"] * 100
 
     merged["blackice_probability_percent"] = \
         merged["blackice_probability"] * 100
@@ -692,6 +702,9 @@ def predict(
         "blackice_probability_percent",
         "blackice_predicted_label",
 
+        "blackice_model_probability",
+        "blackice_model_probability_percent",
+
         "risk_level"
     ]
 
@@ -717,16 +730,16 @@ def predict(
     )
 
     def clean_json_value(value):
-    if pd.isna(value):
-        return None
-
-    if isinstance(value, (np.float32, np.float64)):
-        return float(value)
-
-    if isinstance(value, (np.int32, np.int64)):
-        return int(value)
-
-    return value
+        if pd.isna(value):
+            return None
+    
+        if isinstance(value, (np.float32, np.float64)):
+            return float(value)
+    
+        if isinstance(value, (np.int32, np.int64)):
+            return int(value)
+    
+        return value
 
 
 def dataframe_to_json_records(df):
