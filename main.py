@@ -638,6 +638,12 @@ def predict(
             icing_features
         )
 
+        # predict 함수 안에 임시로 추가
+        print("icing_features:", icing_features)
+        print("blackice_features:", blackice_features)
+        print("merged columns:", merged.columns.tolist())
+        print("X_icing sample:\n", X_icing.head(1))
+
         merged["icing_probability"] = \
             icing_model.predict_proba(
                 X_icing
@@ -660,11 +666,7 @@ def predict(
         merged["blackice_probability"] = merged["blackice_model_probability"]
         merged["blackice_probability_percent"] = merged["blackice_model_probability"] * 100
         
-        # predict 함수 안에 임시로 추가
-        print("icing_features:", icing_features)
-        print("blackice_features:", blackice_features)
-        print("merged columns:", merged.columns.tolist())
-        print("X_icing sample:\n", X_icing.head(1))
+        
 
         merged["risk_level"] = \
             merged[
