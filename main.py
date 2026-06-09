@@ -22,6 +22,31 @@ BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
+def read_csv_safe(path):
+
+    for enc in [
+        "utf-8-sig",
+        "cp949",
+        "euc-kr",
+        "utf-8"
+    ]:
+
+        try:
+
+            return pd.read_csv(
+                path,
+                encoding=enc,
+                low_memory=False
+            )
+
+        except UnicodeDecodeError:
+
+            continue
+
+    raise Exception(
+        f"CSV 인코딩 읽기 실패: {path}"
+    )
+
 DATA_PATH = os.path.join(
     BASE_DIR,
     "data",
@@ -148,16 +173,8 @@ blackice_model, blackice_features = \
 # 데이터 로드
 # ============================================
 
-base_df = pd.read_csv(
-    DATA_PATH,
-    encoding="utf-8-sig"
-)
-
-meta_df = pd.read_csv(
-    META_PATH,
-    encoding="utf-8-sig"
-)
-
+base_df = read_csv_safe(DATA_PATH)
+meta_df = read_csv_safe(META_PATH)
 # ============================================
 # 숫자형 변환
 # ============================================
