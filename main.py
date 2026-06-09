@@ -412,6 +412,8 @@ def fetch_weather_data(
     weather_df = pd.DataFrame(
         weather
     )
+    print(weather_df.columns.tolist())
+    print(weather_df.head())
 
     if weather_df.empty:
         return weather_df
@@ -550,6 +552,38 @@ def predict(
         req.max_points
     )
 
+        # =====================================
+    # ASOS ID 컬럼명 / 타입 정리
+    # =====================================
+
+    if "stn" in weather_df.columns:
+        weather_df = weather_df.rename(
+            columns={"stn": "asos_id"}
+        )
+
+    if "stnId" in weather_df.columns:
+        weather_df = weather_df.rename(
+            columns={"stnId": "asos_id"}
+        )
+
+    if "지점" in weather_df.columns:
+        weather_df = weather_df.rename(
+            columns={"지점": "asos_id"}
+        )
+
+    selected_df["asos_id"] = (
+        selected_df["asos_id"]
+        .astype(float)
+        .astype(int)
+        .astype(str)
+    )
+
+    weather_df["asos_id"] = (
+        weather_df["asos_id"]
+        .astype(float)
+        .astype(int)
+        .astype(str)
+    )
     # =====================================
     # 기상 merge
     # =====================================
