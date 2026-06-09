@@ -453,92 +453,41 @@ def safe_float(x):
 # 기상 데이터
 # =========================================================
 
-def fetch_weather_data(
-    target_time
-):
-
-    tm = target_time.strftime(
-        "%Y%m%d%H00"
-    )
-
-    params = {
-        "tm": tm,
-        "stn": "0",
-        "help": "0",
-        "authKey": KMA_API_KEY
-    }
+def fetch_weather_data(target_time):
+    tm = target_time.strftime("%Y%m%d%H00")
+    params = {"tm": tm, "stn": "0", "help": "0", "authKey": KMA_API_KEY}
 
     try:
-
-        response = requests.get(
-            PAST_URL,
-            params=params,
-            timeout=30
-        )
-
+        response = requests.get(PAST_URL, params=params, timeout=30)
         response.raise_for_status()
 
-        text = response.text
-
-        lines = text.split("\n")
-
+        lines = response.text.split("\n")
         weather_list = []
 
         for line in lines:
-
-            if line.startswith("#"):
-                continue
-
-            if len(line.strip()) == 0:
+            if line.startswith("#") or len(line.strip()) == 0:
                 continue
 
             parts = line.split()
-
             if len(parts) < 39:
                 continue
 
             try:
-
-                stn_id = parts[1]
-
                 weather_list.append({
-
-                    "asos_id":
-                        str(stn_id),
-
-                    "기온":
-                        safe_float(parts[11]),
-
-                    "습도":
-                        safe_float(parts[13]),
-
-                    "풍속":
-                        safe_float(parts[3]),
-
-                    "강수량":
-                        safe_float(parts[15]),
-
-                    "지면온도":
-                        safe_float(parts[36])
-
+                    "asos_id":  str(parts[1]),
+                    "기온":      safe_float(parts[11]),
+                    "습도":      safe_float(parts[13]),
+                    "풍속":      safe_float(parts[3]),
+                    "강수량":    safe_float(parts[15]),
+                    "지면온도":  safe_float(parts[36])
                 })
-
             except:
                 continue
 
-        weather_df = pd.DataFrame(
-            weather_list
-        )
-
-        return weather_df
+        return pd.DataFrame(weather_list)  # ✅ rows → weather_list
 
     except Exception as e:
-
-        print(
-            "기상청 API 오류:",
-            str(e)
-        )
-
+        print("기상청 API 오류:", str(e))
         return pd.DataFrame()
 
 # =========================================================
