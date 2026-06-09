@@ -633,16 +633,45 @@ def predict(
 
         )
 
+        # ✅ 추가
+        merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
+
+        
+
         X_icing = make_model_input(
             merged,
             icing_features
         )
 
         # predict 함수 안에 임시로 추가
-        print("icing_features:", icing_features)
-        print("blackice_features:", blackice_features)
-        print("merged columns:", merged.columns.tolist())
-        print("X_icing sample:\n", X_icing.head(1))
+        merged["추정노면온도"] = (
+            0.7 * merged["기온"]
+            + 0.2 * merged["지면온도"]
+            - 0.3 * merged["풍속"]
+            - 0.1 * merged["강수량"]
+        )
+
+        # ✅ 추가 1 - hour 피처
+        merged["hour"] = target_time.hour
+
+        X_icing = make_model_input(
+            merged,
+            icing_features
+        )
+
+        merged["icing_probability"] = \
+            icing_model.predict_proba(X_icing)[:, 1]
+
+        merged["icing_probability_percent"] = \
+            merged["icing_probability"] * 100
+
+        # ✅ 추가 2 - 결빙확률 피처 (blackice 모델 입력용)
+        merged["결빙확률"] = merged["icing_probability"]
+
+        X_blackice = make_model_input(
+            merged,
+            blackice_features
+        )
 
         merged["icing_probability"] = \
             icing_model.predict_proba(
