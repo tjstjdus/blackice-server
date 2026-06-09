@@ -616,93 +616,30 @@ def predict(
             )
 
         merged["추정노면온도"] = (
-
-            0.7 * merged["기온"]
-
-            +
-
-            0.2 * merged["지면온도"]
-
-            -
-
-            0.3 * merged["풍속"]
-
-            -
-
-            0.1 * merged["강수량"]
-
-        )
-
-        # ✅ 추가
-        merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
-
-        
-
-        X_icing = make_model_input(
-            merged,
-            icing_features
-        )
-
-        # predict 함수 안에 임시로 추가
-        merged["추정노면온도"] = (
             0.7 * merged["기온"]
             + 0.2 * merged["지면온도"]
             - 0.3 * merged["풍속"]
             - 0.1 * merged["강수량"]
         )
 
-        # ✅ 추가 1 - hour 피처
+        merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
         merged["hour"] = target_time.hour
 
-        X_icing = make_model_input(
-            merged,
-            icing_features
-        )
+        X_icing = make_model_input(merged, icing_features)
 
-        merged["icing_probability"] = \
-            icing_model.predict_proba(X_icing)[:, 1]
+        merged["icing_probability"] = icing_model.predict_proba(X_icing)[:, 1]
+        merged["icing_probability_percent"] = merged["icing_probability"] * 100
 
-        merged["icing_probability_percent"] = \
-            merged["icing_probability"] * 100
-
-        # ✅ 추가 2 - 결빙확률 피처 (blackice 모델 입력용)
         merged["결빙확률"] = merged["icing_probability"]
 
-        X_blackice = make_model_input(
-            merged,
-            blackice_features
-        )
+        X_blackice = make_model_input(merged, blackice_features)
 
-        merged["icing_probability"] = \
-            icing_model.predict_proba(
-                X_icing
-            )[:, 1]
+        merged["blackice_model_probability"] = blackice_model.predict_proba(X_blackice)[:, 1]
 
-        merged["icing_probability_percent"] = \
-            merged["icing_probability"] * 100
-
-        X_blackice = make_model_input(
-            merged,
-            blackice_features
-        )
-
-        merged["blackice_model_probability"] = \
-            blackice_model.predict_proba(
-                X_blackice
-            )[:, 1]
-
-        # blackice_model의 확률을 그대로 사용
         merged["blackice_probability"] = merged["blackice_model_probability"]
         merged["blackice_probability_percent"] = merged["blackice_model_probability"] * 100
-        
-        
 
-        merged["risk_level"] = \
-            merged[
-                "blackice_probability"
-            ].apply(
-                make_risk_level
-            )
+        merged["risk_level"] = merged["blackice_probability"].apply(make_risk_level)
 
         result_cols = [
 
