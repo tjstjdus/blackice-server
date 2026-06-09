@@ -13,6 +13,7 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sklearn.neighbors import BallTree
 
 # ============================================
 # 기본 경로
@@ -174,7 +175,45 @@ blackice_model, blackice_features = \
 # ============================================
 
 base_df = read_csv_safe(DATA_PATH)
+def attach_nearest_asos(base_df, meta_df):
+    base_df = base_df.copy()
+    meta_df = meta_df.copy()
+
+    meta_df = meta_df.rename(columns={
+        "지점": "asos_id",
+        "지점명": "asos_name",
+        "위도": "asos_lat",
+        "경도": "asos_lon"
+    })
+
+    base_df["위도"] = pd.to_numeric(base_df["위도"], errors="coerce")
+    base_df["경도"] = pd.to_numeric(base_df["경도"], errors="coerce")
+
+    meta_df["asos_id"] = pd.to_numeric(meta_df["asos_id"], errors="coerce")
+    meta_df["asos_lat"] = pd.to_numeric(meta_df["asos_lat"], errors="coerce")
+    meta_df["asos_lon"] = pd.to_numeric(meta_df["asos_lon"], errors="coerce")
+
+    base_df = base_df.dropna(subset=["위도", "경도"]).reset_index(drop=True)
+    meta_df = meta_df.dropna(subset=["asos_id", "asos_lat", "asos_lon"]).reset_index(drop=True)
+
+    base_rad = np.radians(base_df[["위도", "경도"]].values)
+    meta_rad = np.radians(meta_df[["asos_lat", "asos_lon"]].values)
+
+    tree = BallTree(meta_rad, metric="haversine")
+    dist, idx = tree.query(base_rad, k=1)
+
+    earth_radius_km = 6371.0088
+    matched = meta_df.iloc[idx[:, 0]].reset_index(drop=True)
+
+    base_df["asos_id"] = matched["asos_id"].astype(int).values
+    base_df["asos_name"] = matched["asos_name"].values
+    base_df["asos_distance_m"] = dist[:, 0] * earth_radius_km * 1000
+    base_df["aws_거리_km"] = dist[:, 0] * earth_radius_km
+
+    return base_df
 meta_df = read_csv_safe(META_PATH)
+
+base_df = attach_nearest_asos(base_df, meta_df)
 # ============================================
 # 숫자형 변환
 # ============================================
@@ -479,6 +518,14 @@ def predict(
         (base_df["시군구"] == req.city)
 
     ].copy()
+
+    print(req.province)
+    print(req.city)
+    
+    print(base_df["시도"].unique()[:20])
+    print(base_df["시군구"].unique()[:20])
+    
+    print(selected_df.shape)
 
     if selected_df.empty:
 
