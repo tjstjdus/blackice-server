@@ -24,11 +24,13 @@ BASE_DIR = os.path.dirname(
 
 DATA_PATH = os.path.join(
     BASE_DIR,
+    "data",
     "결빙_비결빙_전국데이터(최종).csv"
 )
 
 META_PATH = os.path.join(
     BASE_DIR,
+    "data",
     "META_관측지점정보.csv"
 )
 
