@@ -509,11 +509,42 @@ def dataframe_to_json_records(df):
 
 
 @app.post("/predict")
+def predict(req: PredictRequest):
 
-def predict(
-    req: PredictRequest
+    target_time = datetime.strptime(
+        f"{req.date} {req.time}",
+        "%Y-%m-%d %H:%M"
+    )
 
-        return {
+    # 중간 예측 코드들
+    # weather_df 만들기
+    # selected_df 만들기
+    # merged 만들기
+    # 결빙 확률 계산
+
+    merged["blackice_model_probability"] = \
+        blackice_model.predict_proba(
+            X_blackice
+        )[:, 1]
+
+    merged["blackice_model_probability_percent"] = \
+        merged["blackice_model_probability"] * 100
+
+    merged["blackice_probability"] = \
+        merged["icing_probability"] * \
+        merged["blackice_model_probability"]
+
+    merged["blackice_probability_percent"] = \
+        merged["blackice_probability"] * 100
+
+    merged["blackice_predicted_label"] = \
+        (
+            merged["blackice_probability"] >= 0.5
+        ).astype(int)
+
+    # result_df 만드는 코드
+
+    return {
         "status": "success",
         "target_time": target_time.strftime("%Y-%m-%d %H:%M"),
         "province": req.province,
@@ -521,14 +552,6 @@ def predict(
         "count": len(result_df),
         "results": dataframe_to_json_records(result_df)
     }
-):
-
-    target_time = datetime.strptime(
-
-        f"{req.date} {req.time}",
-
-        "%Y-%m-%d %H:%M"
-    )
 
     # =====================================
     # 기상 데이터
