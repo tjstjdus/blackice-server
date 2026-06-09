@@ -175,6 +175,8 @@ blackice_model, blackice_features = \
 # ============================================
 
 base_df = read_csv_safe(DATA_PATH)
+meta_df = read_csv_safe(META_PATH)
+
 def attach_nearest_asos(base_df, meta_df):
     base_df = base_df.copy()
     meta_df = meta_df.copy()
@@ -211,8 +213,7 @@ def attach_nearest_asos(base_df, meta_df):
     base_df["aws_거리_km"] = dist[:, 0] * earth_radius_km
 
     return base_df
-meta_df = read_csv_safe(META_PATH)
-
+    
 base_df = attach_nearest_asos(base_df, meta_df)
 # ============================================
 # 숫자형 변환
