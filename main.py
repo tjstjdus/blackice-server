@@ -656,27 +656,10 @@ def predict(
                 X_blackice
             )[:, 1]
 
-        merged["blackice_probability"] = (
+        # blackice_model의 확률을 그대로 사용
+        merged["blackice_probability"] = merged["blackice_model_probability"]
+        merged["blackice_probability_percent"] = merged["blackice_model_probability"] * 100
 
-            merged["icing_probability"]
-
-            *
-
-            merged[
-                "blackice_model_probability"
-            ]
-
-        )
-
-        merged[
-            "blackice_probability_percent"
-        ] = (
-
-            merged[
-                "blackice_probability"
-            ] * 100
-
-        )
 
         merged["risk_level"] = \
             merged[
@@ -707,11 +690,10 @@ def predict(
             "icing_probability",
             "icing_probability_percent",
 
-            "blackice_model_probability",
+            
 
             "blackice_probability",
-            "blackice_probability_percent",
-
+            "blackice_probability_percent", 
             "risk_level"
 
         ]
