@@ -261,26 +261,34 @@ base_df = attach_nearest_asos(
 # 모델 로드
 # ============================================
 
-icing_model = joblib.load(
-    ICING_MODEL_PATH
-)
+def get_model_and_features(obj):
+    if isinstance(obj, dict):
+        model = obj["model"]
 
-blackice_model = joblib.load(
-    BLACKICE_MODEL_PATH
-)
+        if "features" in obj:
+            features = list(obj["features"])
+        elif hasattr(model, "feature_names_in_"):
+            features = list(model.feature_names_in_)
+        else:
+            features = list(model.get_booster().feature_names)
+
+        return model, features
+
+    model = obj
+
+    if hasattr(model, "feature_names_in_"):
+        features = list(model.feature_names_in_)
+    else:
+        features = list(model.get_booster().feature_names)
+
+    return model, features
 
 
-# ============================================
-# feature
-# ============================================
+icing_obj = joblib.load(ICING_MODEL_PATH)
+blackice_obj = joblib.load(BLACKICE_MODEL_PATH)
 
-icing_features = list(
-    icing_model.feature_names_in_
-)
-
-blackice_features = list(
-    blackice_model.feature_names_in_
-)
+icing_model, icing_features = get_model_and_features(icing_obj)
+blackice_model, blackice_features = get_model_and_features(blackice_obj)
 
 
 # ============================================
