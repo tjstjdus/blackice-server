@@ -712,6 +712,34 @@ def predict(
         None
     )
 
+    def clean_json_value(value):
+    if pd.isna(value):
+        return None
+
+    if isinstance(value, (np.float32, np.float64)):
+        return float(value)
+
+    if isinstance(value, (np.int32, np.int64)):
+        return int(value)
+
+    return value
+
+
+def dataframe_to_json_records(df):
+    records = df.to_dict(orient="records")
+
+    clean_records = []
+
+    for row in records:
+        clean_row = {}
+
+        for key, value in row.items():
+            clean_row[key] = clean_json_value(value)
+
+        clean_records.append(clean_row)
+
+    return clean_records
+
     return {
 
         "status": "success",
@@ -730,10 +758,7 @@ def predict(
         "count":
             len(result_df),
 
-        "results":
-            result_df.to_dict(
-                orient="records"
-            )
+        "results": dataframe_to_json_records(result_df)
     }
 
 # ============================================
