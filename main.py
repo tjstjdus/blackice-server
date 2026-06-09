@@ -75,7 +75,7 @@ BLACKICE_MODEL_PATH = os.path.join(
 # 기상청 API
 # ============================================
 
-KMA_API_KEY = "여기에_API_KEY"
+KMA_API_KEY = "9jV6iWFlSeC1eolhZdngjw"
 
 PAST_URL = (
     "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
