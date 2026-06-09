@@ -357,7 +357,7 @@ def fetch_weather_data(target_time):
                 continue
 
             parts = line.split()
-            print(parts)
+            print(len(parts), parts)
 
             if len(parts) < 12:
                 continue
@@ -450,8 +450,10 @@ def predict(req: PredictRequest):
 
         merged["풍속"] = merged["풍속"].fillna(0)
         merged["강수량"] = merged["강수량"].fillna(0)
-        merged["습도"] = merged["습도"].fillna(merged["습도"].median())
-        merged["지면온도"] = merged["지면온도"].fillna(merged["기온"])
+        merged["기온"] = merged["기온"].fillna(0)
+        merged["지면온도"] = merged["지면온도"].fillna(
+        merged["기온"]
+)
 
         merged["추정노면온도"] = (
             0.7 * merged["기온"]
