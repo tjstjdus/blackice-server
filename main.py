@@ -328,7 +328,17 @@ def dataframe_to_json_records(df):
 # ============================================
 # 기상 데이터
 # ============================================
+def safe_float(x):
+    try:
+        value = float(x)
 
+        if value in [-9, -9.0, -99, -99.0]:
+            return np.nan
+
+        return value
+
+    except:
+        return np.nan
 
 def fetch_weather_data(target_time):
 
@@ -347,7 +357,8 @@ def fetch_weather_data(target_time):
         lines = text.split("\n")
 
         rows = []
-
+        weather_list = []
+        
         for line in lines:
 
             if line.startswith("#"):
@@ -361,20 +372,30 @@ def fetch_weather_data(target_time):
 
             if len(parts) < 12:
                 continue
-
+                
             try:
+                stn_id = parts[1]
+                
+                weather_list.append({
 
-                rows.append(
-                    {
-                        "asos_id": parts[0],
-                        "기온": parts[11],
-                        "풍향": parts[3],
-                        "풍속": parts[4],
-                        "습도": parts[13],
-                        "강수량": parts[15],
-                        "지면온도": parts[38],
-                    }
-                )
+                    "asos_id": str(stn_id),
+
+                    "temp":
+                        safe_float(parts[11]),
+
+                    "humidity":
+                        safe_float(parts[13]),
+
+                    "wind_speed":
+                        safe_float(parts[2]),
+
+                    "rainfall":
+                        safe_float(parts[3]),
+
+                    "surface_temp":
+                        safe_float(parts[38])
+
+                })
 
             except:
                 continue
