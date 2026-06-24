@@ -724,3 +724,42 @@ def predict(
             "message": str(e),
             "results": []
         }
+# =========================================================
+# main.py의 /predict 엔드포인트 아래에 이 코드를 추가하세요
+# =========================================================
+
+@app.get("/stations")
+def get_stations():
+    """기상 관측소 위치 목록 반환"""
+
+    try:
+        # meta_df는 attach_nearest_asos() 실행 후
+        # asos_id, asos_name, asos_lat, asos_lon 컬럼을 가짐
+        station_df = meta_df.rename(columns={
+            "지점":  "asos_id",
+            "지점명": "asos_name"
+        }).copy()
+
+        station_df["asos_id"]  = pd.to_numeric(station_df["asos_id"],  errors="coerce")
+        station_df["asos_lat"] = pd.to_numeric(station_df["위도"], errors="coerce")
+        station_df["asos_lon"] = pd.to_numeric(station_df["경도"], errors="coerce")
+
+        station_df = station_df.dropna(
+            subset=["asos_id", "asos_lat", "asos_lon"]
+        )
+
+        result = station_df[["asos_id", "asos_name", "asos_lat", "asos_lon"]].copy()
+        result["asos_id"] = result["asos_id"].astype(int).astype(str)
+
+        return {
+            "status": "success",
+            "count": len(result),
+            "stations": dataframe_to_json_records(result)
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "stations": []
+        }
