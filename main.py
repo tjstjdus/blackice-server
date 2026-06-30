@@ -763,3 +763,130 @@ def get_stations():
             "message": str(e),
             "stations": []
         }
+
+# =========================================================
+# main.py 맨 끝(/predict 엔드포인트 다음)에 이 코드를 추가하세요
+# =========================================================
+
+@app.get("/predict/nationwide")
+def predict_nationwide(
+    offset_minutes: int = 0,
+    top_n: int = 20
+):
+    """
+    전국 고속도로(ROAD_RANK=101) 전 지점에 대한 블랙아이스 예측
+
+    offset_minutes : 0=현재, 30=30분 후, 60=1시간 후
+    top_n           : 위험도 상위 N개만 별도로 표시하기 위한 개수
+    """
+
+    try:
+        target_time = datetime.now() + timedelta(minutes=offset_minutes)
+
+        weather_df = fetch_weather_data(target_time)
+
+        if weather_df.empty:
+            return {
+                "status": "error",
+                "message": "기상 데이터 없음",
+                "results": [],
+                "top_risk": []
+            }
+
+        # 고속도로만 필터링 (ROAD_RANK == 101)
+        nationwide_df = base_df[
+            base_df["ROAD_RANK"] == 101
+        ].copy()
+
+        if nationwide_df.empty:
+            return {
+                "status": "error",
+                "message": "고속도로 지점 데이터 없음",
+                "results": [],
+                "top_risk": []
+            }
+
+        nationwide_df["asos_id"] = nationwide_df["asos_id"].astype(str)
+        weather_df["asos_id"] = weather_df["asos_id"].astype(str)
+
+        merged = pd.merge(
+            nationwide_df,
+            weather_df,
+            on="asos_id",
+            how="left"
+        )
+
+        numeric_cols = ["기온", "습도", "풍속", "강수량", "지면온도"]
+        for col in numeric_cols:
+            if col in merged.columns:
+                merged[col] = pd.to_numeric(merged[col], errors="coerce")
+
+        merged["풍속"] = merged["풍속"].fillna(1.5)
+        merged["강수량"] = merged["강수량"].fillna(0)
+        merged["기온"] = merged["기온"].fillna(0)
+        merged["습도"] = merged["습도"].fillna(70)
+        merged["지면온도"] = merged["지면온도"].fillna(merged["기온"])
+
+        merged["추정노면온도"] = (
+            0.7 * merged["기온"]
+            + 0.2 * merged["지면온도"]
+            - 0.3 * merged["풍속"]
+            - 0.1 * merged["강수량"]
+        )
+
+        X_icing = make_model_input(merged, icing_features)
+        merged["icing_probability"] = icing_model.predict_proba(X_icing)[:, 1]
+        merged["icing_probability_percent"] = merged["icing_probability"] * 100
+
+        X_blackice = make_model_input(merged, blackice_features)
+        merged["blackice_model_probability"] = blackice_model.predict_proba(X_blackice)[:, 1]
+
+        merged["blackice_probability"] = (
+            merged["icing_probability"] * merged["blackice_model_probability"]
+        )
+        merged["blackice_probability_percent"] = merged["blackice_probability"] * 100
+        merged["risk_level"] = merged["blackice_probability"].apply(make_risk_level)
+
+        result_cols = [
+            "시도", "시군구", "읍면동",
+            "위도", "경도",
+            "asos_id", "asos_name",
+            "기온", "습도", "풍속", "강수량", "지면온도",
+            "icing_probability_percent",
+            "blackice_probability_percent",
+            "risk_level"
+        ]
+
+        result_cols = [c for c in result_cols if c in merged.columns]
+        result_df = merged[result_cols].copy()
+
+        # 결측 좌표 제거
+        result_df = result_df.dropna(subset=["위도", "경도"])
+
+        all_results = dataframe_to_json_records(result_df)
+
+        # 위험도 기준 정렬 후 상위 N개 추출
+        sorted_results = sorted(
+            all_results,
+            key=lambda r: r.get("blackice_probability_percent", 0) or 0,
+            reverse=True
+        )
+
+        top_risk = sorted_results[:top_n]
+
+        return {
+            "status": "success",
+            "target_time": target_time.strftime("%Y-%m-%d %H:%M"),
+            "offset_minutes": offset_minutes,
+            "count": len(all_results),
+            "results": all_results,
+            "top_risk": top_risk
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "results": [],
+            "top_risk": []
+        }
