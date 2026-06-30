@@ -33,6 +33,10 @@ app.add_middleware(
 
 KST = timezone(timedelta(hours=9))
 
+def now_kst():
+    """서버 위치(타임존)와 무관하게 항상 한국 표준시 기준 현재 시각 반환"""
+    return datetime.now(KST).replace(tzinfo=None)
+
 # =========================================================
 # BASE DIR
 # =========================================================
@@ -56,6 +60,11 @@ KMA_API_KEY = os.getenv(
 
 PAST_URL = (
     "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
+)
+
+# 단기예보 (현재 ~ 미래 최대 3일, 1시간 간격) — 격자(nx, ny) 기반
+FORECAST_URL = (
+    "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst"
 )
 
 # =========================================================
@@ -491,6 +500,191 @@ def fetch_weather_data(target_time):
         return pd.DataFrame()
 
 # =========================================================
+# 위경도 → 기상청 격자좌표(nx, ny) 변환
+# 기상청 단기예보 API는 5km 격자(Lambert Conformal Conic) 좌표를 씀
+# =========================================================
+
+def latlon_to_grid(lat, lon):
+
+    RE = 6371.00877       # 지구 반경(km)
+    GRID = 5.0             # 격자 간격(km)
+    SLAT1 = 30.0           # 표준위도1
+    SLAT2 = 60.0           # 표준위도2
+    OLON = 126.0           # 기준점 경도
+    OLAT = 38.0            # 기준점 위도
+    XO = 43                # 기준점 X좌표
+    YO = 136                # 기준점 Y좌표
+
+    DEGRAD = np.pi / 180.0
+
+    re = RE / GRID
+    slat1 = SLAT1 * DEGRAD
+    slat2 = SLAT2 * DEGRAD
+    olon = OLON * DEGRAD
+    olat = OLAT * DEGRAD
+
+    sn = np.tan(np.pi * 0.25 + slat2 * 0.5) / np.tan(np.pi * 0.25 + slat1 * 0.5)
+    sn = np.log(np.cos(slat1) / np.cos(slat2)) / np.log(sn)
+
+    sf = np.tan(np.pi * 0.25 + slat1 * 0.5)
+    sf = (sf ** sn) * np.cos(slat1) / sn
+
+    ro = np.tan(np.pi * 0.25 + olat * 0.5)
+    ro = re * sf / (ro ** sn)
+
+    ra = np.tan(np.pi * 0.25 + lat * DEGRAD * 0.5)
+    ra = re * sf / (ra ** sn)
+
+    theta = lon * DEGRAD - olon
+    if theta > np.pi:
+        theta -= 2.0 * np.pi
+    if theta < -np.pi:
+        theta += 2.0 * np.pi
+    theta *= sn
+
+    nx = int(ra * np.sin(theta) + XO + 1.5)
+    ny = int(ro - ra * np.cos(theta) + YO + 1.5)
+
+    return nx, ny
+
+# =========================================================
+# 단기예보 base_time 계산
+# 단기예보는 02,05,08,11,14,17,20,23시에 발표되며,
+# 발표 직후 일정 시간(약 10분) 데이터 정리 시간이 필요함
+# =========================================================
+
+def get_forecast_base(now):
+
+    base_hours = [2, 5, 8, 11, 14, 17, 20, 23]
+
+    candidate = now - timedelta(minutes=10)
+
+    valid_hours = [h for h in base_hours if h <= candidate.hour]
+
+    if valid_hours:
+        base_hour = max(valid_hours)
+        base_date = candidate.strftime("%Y%m%d")
+    else:
+        # 자정 직후 — 전날 23시 발표본 사용
+        prev_day = candidate - timedelta(days=1)
+        base_hour = 23
+        base_date = prev_day.strftime("%Y%m%d")
+
+    base_time = f"{base_hour:02d}00"
+
+    return base_date, base_time
+
+# =========================================================
+# 단기예보 데이터 (미래 시각 — 최대 약 3일 후까지)
+# nx, ny 격자별로 1회씩 요청하므로, 호출 전 좌표를 중복 제거해서 넘길 것
+# =========================================================
+
+def fetch_forecast_data(target_time, grid_points):
+    """
+    target_time : 예보를 보고 싶은 미래 시각 (datetime)
+    grid_points : [(asos_id, lat, lon), ...] 형태의 리스트
+                  (asos_id별 대표 좌표 — 보통 ASOS 위치나 지점 위경도)
+    """
+
+    base_date, base_time = get_forecast_base(now_kst())
+
+    fcst_date = target_time.strftime("%Y%m%d")
+    fcst_hour = target_time.strftime("%H00")
+
+    # nx, ny 기준으로 중복 제거 (같은 격자는 한 번만 호출)
+    grid_map = {}
+    for asos_id, lat, lon in grid_points:
+        nx, ny = latlon_to_grid(lat, lon)
+        grid_map.setdefault((nx, ny), []).append(asos_id)
+
+    weather_list = []
+
+    for (nx, ny), asos_ids in grid_map.items():
+
+        params = {
+            "pageNo": 1,
+            "numOfRows": 1000,
+            "dataType": "JSON",
+            "base_date": base_date,
+            "base_time": base_time,
+            "nx": nx,
+            "ny": ny,
+            "authKey": KMA_API_KEY
+        }
+
+        try:
+            response = requests.get(FORECAST_URL, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            items = (
+                data.get("response", {})
+                    .get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+            )
+
+            point_data = {}
+
+            for item in items:
+                if item.get("fcstDate") != fcst_date:
+                    continue
+                if item.get("fcstTime") != fcst_hour:
+                    continue
+
+                category = item.get("category")
+                value = item.get("fcstValue")
+
+                if category == "TMP":
+                    point_data["기온"] = safe_float(value)
+                elif category == "REH":
+                    point_data["습도"] = safe_float(value)
+                elif category == "WSD":
+                    point_data["풍속"] = safe_float(value)
+                elif category == "PCP":
+                    # "강수없음" 같은 문자열 처리
+                    point_data["강수량"] = safe_float(value) if value not in (
+                        "강수없음", None
+                    ) else 0.0
+
+            if point_data:
+                # 단기예보는 지면온도를 제공하지 않으므로 기온으로 대체
+                point_data.setdefault("지면온도", point_data.get("기온"))
+                point_data.setdefault("강수량", 0.0)
+
+                for asos_id in asos_ids:
+                    row = {"asos_id": str(asos_id)}
+                    row.update(point_data)
+                    weather_list.append(row)
+
+        except Exception as e:
+            print(f"단기예보 API 오류 (nx={nx}, ny={ny}):", str(e))
+            continue
+
+    return pd.DataFrame(weather_list)
+
+# =========================================================
+# 시각에 따라 과거(관측) / 미래(예보) API를 자동 분기
+# =========================================================
+
+def fetch_weather_data_auto(target_time, grid_points):
+    """
+    target_time이 현재 시각 이하 → 과거 관측 API (fetch_weather_data)
+    target_time이 현재 시각보다 미래 → 단기예보 API (fetch_forecast_data)
+    """
+
+    now = now_kst()
+
+    if target_time <= now:
+        return fetch_weather_data(target_time)
+
+    # 단기예보는 최대 약 3일(67시간) 후까지만 제공
+    if target_time > now + timedelta(hours=67):
+        return pd.DataFrame()
+
+    return fetch_forecast_data(target_time, grid_points)
+
+# =========================================================
 # 루트
 # =========================================================
 
@@ -568,18 +762,6 @@ def predict(
             "%Y-%m-%d %H:%M"
         )
 
-        weather_df = fetch_weather_data(
-            target_time
-        )
-
-        if weather_df.empty:
-
-            return {
-                "status": "error",
-                "message": "기상 데이터 없음",
-                "results": []
-            }
-
         selected_df = base_df[
 
             (base_df["시도"] == req.province)
@@ -604,6 +786,32 @@ def predict(
 
         selected_df["asos_id"] = \
             selected_df["asos_id"].astype(str)
+
+        # 선택된 지역의 좌표 목록 (단기예보 호출 시 격자 변환용)
+        grid_points = list(zip(
+            selected_df["asos_id"],
+            selected_df["위도"],
+            selected_df["경도"]
+        ))
+
+        weather_df = fetch_weather_data_auto(
+            target_time,
+            grid_points
+        )
+
+        if weather_df.empty:
+
+            now = now_kst()
+            if target_time > now + timedelta(hours=67):
+                msg = "선택하신 시각은 예보 가능 범위(최대 약 3일 후)를 벗어났습니다."
+            else:
+                msg = "기상 데이터 없음"
+
+            return {
+                "status": "error",
+                "message": msg,
+                "results": []
+            }
 
         weather_df["asos_id"] = \
             weather_df["asos_id"].astype(str)
@@ -780,7 +988,7 @@ def predict_nationwide(
     """
 
     try:
-        target_time = datetime.now() + timedelta(minutes=offset_minutes)
+        target_time = now_kst() + timedelta(minutes=offset_minutes)
 
         weather_df = fetch_weather_data(target_time)
 
