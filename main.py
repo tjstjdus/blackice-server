@@ -67,6 +67,11 @@ FORECAST_URL = (
     "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst"
 )
 
+# 초단기실황 (방금 관측된 가장 최신 값, 매시 10분에 갱신) — 격자(nx, ny) 기반
+NCST_URL = (
+    "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
+)
+
 # =========================================================
 # 파일 찾기
 # =========================================================
@@ -542,8 +547,8 @@ def latlon_to_grid(lat, lon):
         theta += 2.0 * np.pi
     theta *= sn
 
-    nx = int(ra * np.sin(theta) + XO + 1.5)
-    ny = int(ro - ra * np.cos(theta) + YO + 1.5)
+    nx = int(ra * np.sin(theta) + XO + 0.5)
+    ny = int(ro - ra * np.cos(theta) + YO + 0.5)
 
     return nx, ny
 
@@ -571,6 +576,22 @@ def get_forecast_base(now):
         base_date = prev_day.strftime("%Y%m%d")
 
     base_time = f"{base_hour:02d}00"
+
+    return base_date, base_time
+
+# =========================================================
+# 초단기실황 base_time 계산
+# 초단기실황은 매시 정각 발표, 약 10분 후 데이터 제공
+# 예: 14:05 요청 → 아직 14시 데이터 없음 → 13시 데이터 사용
+#     14:15 요청 → 14시 데이터 사용 가능
+# =========================================================
+
+def get_ncst_base(now):
+
+    candidate = now - timedelta(minutes=10)
+
+    base_date = candidate.strftime("%Y%m%d")
+    base_time = candidate.strftime("%H00")
 
     return base_date, base_time
 
@@ -664,25 +685,111 @@ def fetch_forecast_data(target_time, grid_points):
     return pd.DataFrame(weather_list)
 
 # =========================================================
-# 시각에 따라 과거(관측) / 미래(예보) API를 자동 분기
+# 초단기실황 데이터 (현재 시각 — 가장 최신 관측값)
+# =========================================================
+
+def fetch_ncst_data(grid_points):
+    """
+    grid_points : [(asos_id, lat, lon), ...]
+    "현재"는 시시각각 변하므로 target_time을 받지 않고
+    항상 now_kst() 기준 최신 발표분을 사용
+    """
+
+    base_date, base_time = get_ncst_base(now_kst())
+
+    # nx, ny 기준으로 중복 제거 (같은 격자는 한 번만 호출)
+    grid_map = {}
+    for asos_id, lat, lon in grid_points:
+        nx, ny = latlon_to_grid(lat, lon)
+        grid_map.setdefault((nx, ny), []).append(asos_id)
+
+    weather_list = []
+
+    for (nx, ny), asos_ids in grid_map.items():
+
+        params = {
+            "pageNo": 1,
+            "numOfRows": 100,
+            "dataType": "JSON",
+            "base_date": base_date,
+            "base_time": base_time,
+            "nx": nx,
+            "ny": ny,
+            "authKey": KMA_API_KEY
+        }
+
+        try:
+            response = requests.get(NCST_URL, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            items = (
+                data.get("response", {})
+                    .get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+            )
+
+            point_data = {}
+
+            for item in items:
+                category = item.get("category")
+                value = item.get("obsrValue")
+
+                if category == "T1H":
+                    point_data["기온"] = safe_float(value)
+                elif category == "REH":
+                    point_data["습도"] = safe_float(value)
+                elif category == "WSD":
+                    point_data["풍속"] = safe_float(value)
+                elif category == "RN1":
+                    point_data["강수량"] = safe_float(value)
+
+            if point_data:
+                point_data.setdefault("지면온도", point_data.get("기온"))
+                point_data.setdefault("강수량", 0.0)
+
+                for asos_id in asos_ids:
+                    row = {"asos_id": str(asos_id)}
+                    row.update(point_data)
+                    weather_list.append(row)
+
+        except Exception as e:
+            print(f"초단기실황 API 오류 (nx={nx}, ny={ny}):", str(e))
+            continue
+
+    return pd.DataFrame(weather_list)
+
+# =========================================================
+# 시각에 따라 과거(관측) / 현재(초단기실황) / 미래(단기예보) 자동 분기
 # =========================================================
 
 def fetch_weather_data_auto(target_time, grid_points):
     """
-    target_time이 현재 시각 이하 → 과거 관측 API (fetch_weather_data)
-    target_time이 현재 시각보다 미래 → 단기예보 API (fetch_forecast_data)
+    target_time이 현재 시각보다 충분히 과거(1시간 초과)  → 과거 관측 API
+    target_time이 현재 시각과 거의 일치(±1시간 이내)     → 초단기실황 API (최신 관측)
+    target_time이 현재 시각보다 미래                       → 단기예보 API
     """
 
     now = now_kst()
+    diff = (target_time - now).total_seconds()
 
-    if target_time <= now:
+    # 미래
+    if diff > 3600:
+        if target_time > now + timedelta(hours=67):
+            return pd.DataFrame()
+        return fetch_forecast_data(target_time, grid_points)
+
+    # 현재 (전후 1시간 이내는 "현재"로 취급 — 가장 신선한 데이터 사용)
+    if diff > -3600:
+        ncst_df = fetch_ncst_data(grid_points)
+        if not ncst_df.empty:
+            return ncst_df
+        # 초단기실황 실패 시 과거 관측으로 폴백
         return fetch_weather_data(target_time)
 
-    # 단기예보는 최대 약 3일(67시간) 후까지만 제공
-    if target_time > now + timedelta(hours=67):
-        return pd.DataFrame()
-
-    return fetch_forecast_data(target_time, grid_points)
+    # 명확한 과거
+    return fetch_weather_data(target_time)
 
 # =========================================================
 # 루트
@@ -990,12 +1097,27 @@ def predict_nationwide(
     try:
         target_time = now_kst() + timedelta(minutes=offset_minutes)
 
-        weather_df = fetch_weather_data(target_time)
+        # 격자 변환용 좌표 목록 (asos_id, 위도, 경도)
+        # asos_id 기준 중복 제거 — ASOS 관측소 수만큼만 API 호출하도록 최소화
+        unique_asos = base_df.drop_duplicates(subset=["asos_id"])
+        grid_points = list(zip(
+            unique_asos["asos_id"].astype(str),
+            unique_asos["위도"],
+            unique_asos["경도"]
+        ))
+
+        weather_df = fetch_weather_data_auto(target_time, grid_points)
 
         if weather_df.empty:
+            now = now_kst()
+            if target_time > now + timedelta(hours=67):
+                msg = "선택하신 시각은 예보 가능 범위(최대 약 3일 후)를 벗어났습니다."
+            else:
+                msg = "기상 데이터 없음"
+
             return {
                 "status": "error",
-                "message": "기상 데이터 없음",
+                "message": msg,
                 "results": [],
                 "top_risk": []
             }
