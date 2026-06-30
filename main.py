@@ -515,7 +515,45 @@ def get_regions():
     }
 
 # =========================================================
-# 예측 API
+# 기상 관측소 위치 API
+# =========================================================
+
+@app.get("/stations")
+def get_stations():
+    """기상 관측소 위치 목록 반환"""
+
+    try:
+        station_df = meta_df.rename(columns={
+            "지점":  "asos_id",
+            "지점명": "asos_name"
+        }).copy()
+
+        station_df["asos_id"]  = pd.to_numeric(station_df["asos_id"],  errors="coerce")
+        station_df["asos_lat"] = pd.to_numeric(station_df["위도"], errors="coerce")
+        station_df["asos_lon"] = pd.to_numeric(station_df["경도"], errors="coerce")
+
+        station_df = station_df.dropna(
+            subset=["asos_id", "asos_lat", "asos_lon"]
+        )
+
+        result = station_df[["asos_id", "asos_name", "asos_lat", "asos_lon"]].copy()
+        result["asos_id"] = result["asos_id"].astype(int).astype(str)
+
+        return {
+            "status": "success",
+            "count": len(result),
+            "stations": dataframe_to_json_records(result)
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "stations": []
+        }
+
+# =========================================================
+# 예측 API (지역 선택 기반)
 # =========================================================
 
 @app.post("/predict")
@@ -663,7 +701,7 @@ def predict(
             "icing_probability",
             "icing_probability_percent",
 
-            
+
 
             "blackice_probability",
             "blackice_probability_percent", 
@@ -724,48 +762,9 @@ def predict(
             "message": str(e),
             "results": []
         }
-# =========================================================
-# main.py의 /predict 엔드포인트 아래에 이 코드를 추가하세요
-# =========================================================
-
-@app.get("/stations")
-def get_stations():
-    """기상 관측소 위치 목록 반환"""
-
-    try:
-        # meta_df는 attach_nearest_asos() 실행 후
-        # asos_id, asos_name, asos_lat, asos_lon 컬럼을 가짐
-        station_df = meta_df.rename(columns={
-            "지점":  "asos_id",
-            "지점명": "asos_name"
-        }).copy()
-
-        station_df["asos_id"]  = pd.to_numeric(station_df["asos_id"],  errors="coerce")
-        station_df["asos_lat"] = pd.to_numeric(station_df["위도"], errors="coerce")
-        station_df["asos_lon"] = pd.to_numeric(station_df["경도"], errors="coerce")
-
-        station_df = station_df.dropna(
-            subset=["asos_id", "asos_lat", "asos_lon"]
-        )
-
-        result = station_df[["asos_id", "asos_name", "asos_lat", "asos_lon"]].copy()
-        result["asos_id"] = result["asos_id"].astype(int).astype(str)
-
-        return {
-            "status": "success",
-            "count": len(result),
-            "stations": dataframe_to_json_records(result)
-        }
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "stations": []
-        }
 
 # =========================================================
-# main.py 맨 끝(/predict 엔드포인트 다음)에 이 코드를 추가하세요
+# 전국 예측 API (조회 가능한 전체 지점 — 줌인 데모용)
 # =========================================================
 
 @app.get("/predict/nationwide")
@@ -774,7 +773,7 @@ def predict_nationwide(
     top_n: int = 20
 ):
     """
-    전국 고속도로(ROAD_RANK=101) 전 지점에 대한 블랙아이스 예측
+    조회 가능한 전체 지점(base_df 전체)에 대한 블랙아이스 예측
 
     offset_minutes : 0=현재, 30=30분 후, 60=1시간 후
     top_n           : 위험도 상위 N개만 별도로 표시하기 위한 개수
@@ -793,15 +792,13 @@ def predict_nationwide(
                 "top_risk": []
             }
 
-        # 고속도로만 필터링 (ROAD_RANK == 101)
-        nationwide_df = base_df[
-            base_df["ROAD_RANK"] == 101
-        ].copy()
+        # 필터링 없이 base_df 전체 지점 사용
+        nationwide_df = base_df.copy()
 
         if nationwide_df.empty:
             return {
                 "status": "error",
-                "message": "고속도로 지점 데이터 없음",
+                "message": "지점 데이터 없음",
                 "results": [],
                 "top_risk": []
             }
@@ -834,31 +831,35 @@ def predict_nationwide(
             - 0.1 * merged["강수량"]
         )
 
+        merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
+        merged["hour"] = target_time.hour
+
         X_icing = make_model_input(merged, icing_features)
         merged["icing_probability"] = icing_model.predict_proba(X_icing)[:, 1]
         merged["icing_probability_percent"] = merged["icing_probability"] * 100
+        merged["결빙확률"] = merged["icing_probability"]
 
         X_blackice = make_model_input(merged, blackice_features)
         merged["blackice_model_probability"] = blackice_model.predict_proba(X_blackice)[:, 1]
 
-        merged["blackice_probability"] = (
-            merged["icing_probability"] * merged["blackice_model_probability"]
-        )
-        merged["blackice_probability_percent"] = merged["blackice_probability"] * 100
+        merged["blackice_probability"] = merged["blackice_model_probability"]
+        merged["blackice_probability_percent"] = merged["blackice_model_probability"] * 100
         merged["risk_level"] = merged["blackice_probability"].apply(make_risk_level)
 
         result_cols = [
             "시도", "시군구", "읍면동",
             "위도", "경도",
             "asos_id", "asos_name",
-            "기온", "습도", "풍속", "강수량", "지면온도",
-            "icing_probability_percent",
-            "blackice_probability_percent",
+            "기온", "습도", "풍속", "강수량", "지면온도", "추정노면온도",
+            "icing_probability", "icing_probability_percent",
+            "blackice_probability", "blackice_probability_percent",
             "risk_level"
         ]
 
         result_cols = [c for c in result_cols if c in merged.columns]
         result_df = merged[result_cols].copy()
+
+        result_df = result_df.replace([np.inf, -np.inf], np.nan)
 
         # 결측 좌표 제거
         result_df = result_df.dropna(subset=["위도", "경도"])
@@ -884,6 +885,7 @@ def predict_nationwide(
         }
 
     except Exception as e:
+        print("NATIONWIDE PREDICT ERROR:", str(e))
         return {
             "status": "error",
             "message": str(e),
