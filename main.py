@@ -5,6 +5,8 @@ import requests
 import numpy as np
 import pandas as pd
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
@@ -605,6 +607,9 @@ def fetch_forecast_data(target_time, grid_points):
     target_time : 예보를 보고 싶은 미래 시각 (datetime)
     grid_points : [(asos_id, lat, lon), ...] 형태의 리스트
                   (asos_id별 대표 좌표 — 보통 ASOS 위치나 지점 위경도)
+
+    격자(nx, ny)별로 병렬 호출하여 응답 시간을 단축한다.
+    (전국 지점 호출 시 순차 처리하면 타임아웃/CORS 오류로 이어질 수 있음)
     """
 
     base_date, base_time = get_forecast_base(now_kst())
@@ -618,9 +623,7 @@ def fetch_forecast_data(target_time, grid_points):
         nx, ny = latlon_to_grid(lat, lon)
         grid_map.setdefault((nx, ny), []).append(asos_id)
 
-    weather_list = []
-
-    for (nx, ny), asos_ids in grid_map.items():
+    def fetch_one_grid(nx, ny, asos_ids):
 
         params = {
             "pageNo": 1,
@@ -634,7 +637,7 @@ def fetch_forecast_data(target_time, grid_points):
         }
 
         try:
-            response = requests.get(FORECAST_URL, params=params, timeout=15)
+            response = requests.get(FORECAST_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -663,24 +666,37 @@ def fetch_forecast_data(target_time, grid_points):
                 elif category == "WSD":
                     point_data["풍속"] = safe_float(value)
                 elif category == "PCP":
-                    # "강수없음" 같은 문자열 처리
                     point_data["강수량"] = safe_float(value) if value not in (
                         "강수없음", None
                     ) else 0.0
 
-            if point_data:
-                # 단기예보는 지면온도를 제공하지 않으므로 기온으로 대체
-                point_data.setdefault("지면온도", point_data.get("기온"))
-                point_data.setdefault("강수량", 0.0)
+            if not point_data:
+                return []
 
-                for asos_id in asos_ids:
-                    row = {"asos_id": str(asos_id)}
-                    row.update(point_data)
-                    weather_list.append(row)
+            point_data.setdefault("지면온도", point_data.get("기온"))
+            point_data.setdefault("강수량", 0.0)
+
+            rows = []
+            for asos_id in asos_ids:
+                row = {"asos_id": str(asos_id)}
+                row.update(point_data)
+                rows.append(row)
+            return rows
 
         except Exception as e:
             print(f"단기예보 API 오류 (nx={nx}, ny={ny}):", str(e))
-            continue
+            return []
+
+    weather_list = []
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {
+            executor.submit(fetch_one_grid, nx, ny, asos_ids): (nx, ny)
+            for (nx, ny), asos_ids in grid_map.items()
+        }
+
+        for future in as_completed(futures):
+            weather_list.extend(future.result())
 
     return pd.DataFrame(weather_list)
 
@@ -693,6 +709,8 @@ def fetch_ncst_data(grid_points):
     grid_points : [(asos_id, lat, lon), ...]
     "현재"는 시시각각 변하므로 target_time을 받지 않고
     항상 now_kst() 기준 최신 발표분을 사용
+
+    격자(nx, ny)별로 병렬 호출하여 응답 시간을 단축한다.
     """
 
     base_date, base_time = get_ncst_base(now_kst())
@@ -703,9 +721,7 @@ def fetch_ncst_data(grid_points):
         nx, ny = latlon_to_grid(lat, lon)
         grid_map.setdefault((nx, ny), []).append(asos_id)
 
-    weather_list = []
-
-    for (nx, ny), asos_ids in grid_map.items():
+    def fetch_one_grid(nx, ny, asos_ids):
 
         params = {
             "pageNo": 1,
@@ -719,7 +735,7 @@ def fetch_ncst_data(grid_points):
         }
 
         try:
-            response = requests.get(NCST_URL, params=params, timeout=15)
+            response = requests.get(NCST_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -745,18 +761,33 @@ def fetch_ncst_data(grid_points):
                 elif category == "RN1":
                     point_data["강수량"] = safe_float(value)
 
-            if point_data:
-                point_data.setdefault("지면온도", point_data.get("기온"))
-                point_data.setdefault("강수량", 0.0)
+            if not point_data:
+                return []
 
-                for asos_id in asos_ids:
-                    row = {"asos_id": str(asos_id)}
-                    row.update(point_data)
-                    weather_list.append(row)
+            point_data.setdefault("지면온도", point_data.get("기온"))
+            point_data.setdefault("강수량", 0.0)
+
+            rows = []
+            for asos_id in asos_ids:
+                row = {"asos_id": str(asos_id)}
+                row.update(point_data)
+                rows.append(row)
+            return rows
 
         except Exception as e:
             print(f"초단기실황 API 오류 (nx={nx}, ny={ny}):", str(e))
-            continue
+            return []
+
+    weather_list = []
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {
+            executor.submit(fetch_one_grid, nx, ny, asos_ids): (nx, ny)
+            for (nx, ny), asos_ids in grid_map.items()
+        }
+
+        for future in as_completed(futures):
+            weather_list.extend(future.result())
 
     return pd.DataFrame(weather_list)
 
