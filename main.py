@@ -440,6 +440,142 @@ def fill_missing_with_nearest(df, target_cols, lat_col="위도", lon_col="경도
     return df
 
 # =========================================================
+# 도로 스내핑 — 좌표를 가장 가까운 실제 도로 위로 보정
+# OSRM(Open Source Routing Machine) 공개 API 사용, 별도 키 불필요
+#
+# 전국 지점을 매 요청마다 스내핑하면 시간이 오래 걸리므로(전체 약 1700개
+# 기준 병렬 처리해도 약 1분 소요), 서버 시작 전에 1회성 스크립트
+# (scripts/build_snap_cache.py)로 미리 계산해 캐시 CSV로 저장해두고,
+# 서버는 그 캐시를 읽기만 한다.
+# =========================================================
+
+OSRM_NEAREST_URL = "https://router.project-osrm.org/nearest/v1/driving"
+
+SNAP_CACHE_PATH = os.path.join(BASE_DIR, "snap_cache.csv")
+
+def snap_one_point(lat, lon):
+    """단일 좌표를 가장 가까운 도로 위 좌표로 보정. 실패 시 원본 좌표 반환.
+    (사전 캐시 생성 스크립트에서만 사용 — 서버 요청 처리 중에는 호출하지 않음)
+    """
+
+    try:
+        url = f"{OSRM_NEAREST_URL}/{lon},{lat}"
+        response = requests.get(url, params={"number": 1}, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+
+        waypoints = data.get("waypoints", [])
+        if not waypoints:
+            return (lat, lon)
+
+        snapped_lon, snapped_lat = waypoints[0]["location"]
+
+        # 보정 거리가 비정상적으로 크면(예: 매칭 실패) 원본 좌표 사용
+        dist_m = waypoints[0].get("distance", 0)
+        if dist_m is not None and dist_m > 500:
+            return (lat, lon)
+
+        return (float(snapped_lat), float(snapped_lon))
+
+    except Exception as e:
+        print(f"도로 스내핑 실패 ({lat},{lon}):", str(e))
+        return (lat, lon)
+
+def build_snap_cache(df, lat_col="위도", lon_col="경도", max_workers=10):
+    """
+    df의 모든 unique 좌표를 도로 위로 보정하여
+    [원본위도, 원본경도, snapped_lat, snapped_lon] CSV를 생성한다.
+
+    1회성 사전 처리용 함수 — 서버 기동 시가 아니라
+    `python main.py --build-snap-cache` 같은 별도 실행에서만 호출한다.
+    """
+
+    unique_coords = df[[lat_col, lon_col]].drop_duplicates().reset_index(drop=True)
+    coord_list = list(zip(
+        unique_coords[lat_col].astype(float),
+        unique_coords[lon_col].astype(float)
+    ))
+
+    print(f"도로 스내핑 캐시 생성 시작 — 총 {len(coord_list)}개 좌표")
+
+    rows = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(snap_one_point, lat, lon): (lat, lon)
+            for lat, lon in coord_list
+        }
+
+        done = 0
+        for future in as_completed(futures):
+            orig_lat, orig_lon = futures[future]
+            try:
+                snapped_lat, snapped_lon = future.result()
+            except Exception:
+                snapped_lat, snapped_lon = orig_lat, orig_lon
+
+            rows.append({
+                "원위도": orig_lat,
+                "원경도": orig_lon,
+                "snapped_lat": snapped_lat,
+                "snapped_lon": snapped_lon
+            })
+
+            done += 1
+            if done % 100 == 0:
+                print(f"  진행: {done}/{len(coord_list)}")
+
+    cache_df = pd.DataFrame(rows)
+    cache_df.to_csv(SNAP_CACHE_PATH, index=False, encoding="utf-8-sig")
+
+    print(f"도로 스내핑 캐시 저장 완료: {SNAP_CACHE_PATH} ({len(cache_df)}개 좌표)")
+
+    return cache_df
+
+def load_snap_cache():
+    """서버 기동 시 캐시 CSV를 로드. 없으면 빈 매핑(보정 없음)으로 동작."""
+
+    if not os.path.exists(SNAP_CACHE_PATH):
+        print(f"[경고] 도로 스내핑 캐시 파일이 없습니다: {SNAP_CACHE_PATH}")
+        print("       원본 좌표를 그대로 사용합니다.")
+        print("       caches는 'python main.py --build-snap-cache' 로 미리 생성하세요.")
+        return {}
+
+    cache_df = read_csv_safe(SNAP_CACHE_PATH)
+
+    mapping = {}
+    for _, row in cache_df.iterrows():
+        key = (round(float(row["원위도"]), 6), round(float(row["원경도"]), 6))
+        mapping[key] = (float(row["snapped_lat"]), float(row["snapped_lon"]))
+
+    print(f"도로 스내핑 캐시 로드 완료: {len(mapping)}개 좌표")
+    return mapping
+
+# 서버 기동 시 1회 로드 — 이후 모든 요청은 이 메모리 캐시를 조회만 함
+SNAP_CACHE = load_snap_cache()
+
+def apply_snapped_coords(df, lat_col="위도", lon_col="경도"):
+    """
+    캐시에 보정 좌표가 있으면 위도/경도 컬럼을 보정값으로 덮어쓴다.
+    캐시에 없는 좌표는 원본 좌표를 그대로 유지한다.
+    (OSRM 호출 없음 — 메모리 딕셔너리 조회만 수행)
+    """
+
+    df = df.copy()
+
+    def get_snapped(row):
+        key = (round(float(row[lat_col]), 6), round(float(row[lon_col]), 6))
+        if key in SNAP_CACHE:
+            return SNAP_CACHE[key]
+        return (row[lat_col], row[lon_col])
+
+    snapped = df.apply(get_snapped, axis=1)
+    df[lat_col] = snapped.apply(lambda x: x[0])
+    df[lon_col] = snapped.apply(lambda x: x[1])
+
+    return df
+
+# =========================================================
 # JSON 정리
 # =========================================================
 
@@ -1077,6 +1213,9 @@ def predict(
 
         merged["risk_level"] = merged["blackice_probability"].apply(make_risk_level)
 
+        # 사전 생성된 도로 스내핑 캐시에서 보정 좌표 조회 (요청 시점 OSRM 호출 없음)
+        merged = apply_snapped_coords(merged)
+
         result_cols = [
 
             "시도",
@@ -1263,6 +1402,9 @@ def predict_nationwide(
         merged["blackice_probability_percent"] = merged["blackice_model_probability"] * 100
         merged["risk_level"] = merged["blackice_probability"].apply(make_risk_level)
 
+        # 사전 생성된 도로 스내핑 캐시에서 보정 좌표 조회 (요청 시점 OSRM 호출 없음)
+        merged = apply_snapped_coords(merged)
+
         result_cols = [
             "시도", "시군구", "읍면동",
             "위도", "경도",
@@ -1309,3 +1451,32 @@ def predict_nationwide(
             "results": [],
             "top_risk": []
         }
+
+# =========================================================
+# 도로 스내핑 캐시 사전 생성 (1회성 CLI 실행 전용)
+#
+# 사용법:
+#   python main.py --build-snap-cache
+#
+# base_df의 전체 unique 좌표를 OSRM으로 보정하여
+# snap_cache.csv에 저장한다. 전국 약 1,700개 좌표 기준
+# 병렬 처리로 약 1분 정도 소요된다.
+#
+# 이 스크립트를 먼저 실행해 캐시 파일을 만들어 두면,
+# 서버는 기동 시 캐시를 즉시 로드만 하고 실제 요청 처리 중에는
+# OSRM을 전혀 호출하지 않으므로 응답 속도에 영향이 없다.
+# =========================================================
+
+if __name__ == "__main__":
+    import sys
+
+    if "--build-snap-cache" in sys.argv:
+        print("=" * 60)
+        print("도로 스내핑 캐시 사전 생성을 시작합니다.")
+        print("=" * 60)
+        build_snap_cache(base_df)
+        print("완료되었습니다. 서버를 재시작하면 캐시가 자동 로드됩니다.")
+    else:
+        print("이 스크립트는 uvicorn으로 직접 실행하지 않습니다.")
+        print("서버 실행: uvicorn main:app --host 0.0.0.0 --port 8000")
+        print("캐시 생성: python main.py --build-snap-cache")
