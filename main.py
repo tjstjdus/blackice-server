@@ -353,6 +353,56 @@ class PredictRequest(BaseModel):
     max_points: int = 20
 
 # =========================================================
+# 추정노면온도 계산
+# 노트북(예측모델_실시간_수정.ipynb)과 동일한 로직.
+# 기본 가중합 공식에 더해, 여름/고온 조건에서 비현실적으로
+# 낮은 노면온도가 나오지 않도록 3단계 보정을 적용한다.
+# =========================================================
+
+def add_estimated_road_surface_temp(df):
+
+    df = df.copy()
+
+    for col in ["기온", "풍속", "강수량", "지면온도"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 지면온도 결측이면 기온으로 대체
+    df["지면온도"] = df["지면온도"].fillna(df["기온"])
+    df["풍속"] = df["풍속"].fillna(0)
+    df["강수량"] = df["강수량"].fillna(0)
+
+    # 1) 지면온도가 비정상적으로 낮으면 기온으로 보정
+    #    (예: 기온은 영상인데 지면온도만 결측 보간 등으로 비정상적으로 낮게 잡힌 경우)
+    df.loc[
+        (df["기온"] >= 10) & (df["지면온도"] < df["기온"] - 10),
+        "지면온도"
+    ] = df["기온"]
+
+    # 기본 추정노면온도 계산
+    df["추정노면온도"] = (
+        0.7 * df["기온"]
+        + 0.2 * df["지면온도"]
+        - 0.3 * df["풍속"]
+        - 0.1 * df["강수량"]
+    )
+
+    # 2) 여름/고온 조건에서 비정상적 저온 방지
+    df.loc[
+        (df["기온"] >= 10) & (df["추정노면온도"] < df["기온"] - 5),
+        "추정노면온도"
+    ] = df["기온"]
+
+    # 3) 기온이 5도 이상이면 추정노면온도가 음수로 내려가지 않게 제한
+    df.loc[
+        (df["기온"] >= 5) & (df["추정노면온도"] < 0),
+        "추정노면온도"
+    ] = df["기온"]
+
+    return df
+
+# =========================================================
 # 위험도
 # =========================================================
 
@@ -1187,12 +1237,8 @@ def predict(
                 merged["기온"]
             )
 
-        merged["추정노면온도"] = (
-            0.7 * merged["기온"]
-            + 0.2 * merged["지면온도"]
-            - 0.3 * merged["풍속"]
-            - 0.1 * merged["강수량"]
-        )
+        # 노면온도 보정 로직(노트북 add_estimated_road_surface_temp와 동일) 적용
+        merged = add_estimated_road_surface_temp(merged)
 
         merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
         merged["hour"] = target_time.hour
@@ -1380,12 +1426,8 @@ def predict_nationwide(
         merged["습도"] = merged["습도"].fillna(70)
         merged["지면온도"] = merged["지면온도"].fillna(merged["기온"])
 
-        merged["추정노면온도"] = (
-            0.7 * merged["기온"]
-            + 0.2 * merged["지면온도"]
-            - 0.3 * merged["풍속"]
-            - 0.1 * merged["강수량"]
-        )
+        # 노면온도 보정 로직(노트북 add_estimated_road_surface_temp와 동일) 적용
+        merged = add_estimated_road_surface_temp(merged)
 
         merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
         merged["hour"] = target_time.hour
