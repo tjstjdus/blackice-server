@@ -358,13 +358,13 @@ class PredictRequest(BaseModel):
 
 def make_risk_level(prob):
 
-    if prob >= 0.7:
-        return "매우 높음"
+    if prob >= 0.8:
+        return "매우 위험"
 
-    elif prob >= 0.4:
-        return "높음"
+    elif prob >= 0.6:
+        return "위험"
 
-    elif prob >= 0.2:
+    elif prob >= 0.3:
         return "주의"
 
     else:
