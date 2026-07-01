@@ -679,21 +679,22 @@ def dataframe_to_json_records(df):
 # =========================================================
 
 def safe_float(x):
-
+    """풍향, 풍속, 강수량, 습도, 지면온도용 — -9/-99를 결측으로 처리"""
     try:
-
         value = float(x)
-
-        if value in [
-            -9,
-            -9.0,
-            -99,
-            -99.0
-        ]:
+        if value in [-9, -9.0, -99, -99.0, -999, -999.0]:
             return np.nan
-
         return value
+    except:
+        return np.nan
 
+def safe_float_temp(x):
+    """기온 전용 — 실제 -9℃가 가능하므로 -99/-999만 결측으로 처리"""
+    try:
+        value = float(x)
+        if value in [-99, -99.0, -999, -999.0]:
+            return np.nan
+        return value
     except:
         return np.nan
 
@@ -717,18 +718,18 @@ def fetch_weather_data(target_time):
                 continue
 
             parts = line.split()
-            if len(parts) < 39:
+            if len(parts) < 36:
                 continue
 
             try:
                 weather_list.append({
                     "asos_id":  str(parts[1]),
-                    "기온":      safe_float(parts[11]),
+                    "기온":      safe_float_temp(parts[11]),
                     "습도":      safe_float(parts[13]),
                     "풍향":      safe_float(parts[2]),
                     "풍속":      safe_float(parts[3]),
                     "강수량":    safe_float(parts[15]),
-                    "지면온도":  safe_float(parts[36])
+                    "지면온도":  safe_float(parts[35])
                 })
             except:
                 continue
