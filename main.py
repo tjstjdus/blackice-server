@@ -725,6 +725,7 @@ def fetch_weather_data(target_time):
                     "asos_id":  str(parts[1]),
                     "기온":      safe_float(parts[11]),
                     "습도":      safe_float(parts[13]),
+                    "풍향":      safe_float(parts[2]),
                     "풍속":      safe_float(parts[3]),
                     "강수량":    safe_float(parts[15]),
                     "지면온도":  safe_float(parts[36])
@@ -895,6 +896,8 @@ def fetch_forecast_data(target_time, grid_points):
                     point_data["기온"] = safe_float(value)
                 elif category == "REH":
                     point_data["습도"] = safe_float(value)
+                elif category == "VEC":
+                    point_data["풍향"] = safe_float(value)
                 elif category == "WSD":
                     point_data["풍속"] = safe_float(value)
                 elif category == "PCP":
@@ -988,6 +991,8 @@ def fetch_ncst_data(grid_points):
                     point_data["기온"] = safe_float(value)
                 elif category == "REH":
                     point_data["습도"] = safe_float(value)
+                elif category == "VEC":
+                    point_data["풍향"] = safe_float(value)
                 elif category == "WSD":
                     point_data["풍속"] = safe_float(value)
                 elif category == "RN1":
@@ -1200,6 +1205,7 @@ def predict(
         numeric_cols = [
             "기온",
             "습도",
+            "풍향",
             "풍속",
             "강수량",
             "지면온도"
@@ -1221,6 +1227,9 @@ def predict(
         )
 
         # 보간으로도 못 채운 극히 일부 경우에 한해 최소 안전망 적용
+        merged["풍향"] = \
+            merged["풍향"].fillna(0)
+
         merged["풍속"] = \
             merged["풍속"].fillna(1.5)
 
@@ -1414,7 +1423,7 @@ def predict_nationwide(
             how="left"
         )
 
-        numeric_cols = ["기온", "습도", "풍속", "강수량", "지면온도"]
+        numeric_cols = ["기온", "습도", "풍향", "풍속", "강수량", "지면온도"]
         for col in numeric_cols:
             if col in merged.columns:
                 merged[col] = pd.to_numeric(merged[col], errors="coerce")
@@ -1423,6 +1432,7 @@ def predict_nationwide(
         merged = fill_missing_with_nearest(merged, numeric_cols)
 
         # 보간으로도 못 채운 극히 일부 경우에 한해 최소 안전망 적용
+        merged["풍향"] = merged["풍향"].fillna(0)
         merged["풍속"] = merged["풍속"].fillna(1.5)
         merged["강수량"] = merged["강수량"].fillna(0)
         merged["기온"] = merged["기온"].fillna(merged["기온"].mean() if merged["기온"].notna().any() else 5.0)
