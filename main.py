@@ -1569,8 +1569,7 @@ def predict(
 # 전국 예측 API (조회 가능한 전체 지점 — 줌인 데모용)
 # =========================================================
 
-@app.get("/predict/nationwide")
-def predict_nationwide(
+def predict_nationwide_compute(
     offset_minutes: int = 0,
     top_n: int = 20
 ):
@@ -1593,7 +1592,9 @@ def predict_nationwide(
             unique_asos["경도"]
         ))
 
+        _t0 = time.time()
         weather_df = fetch_weather_data_auto(target_time, grid_points)
+        _t1 = time.time()
 
         if weather_df.empty:
             now = now_kst()
@@ -1621,6 +1622,7 @@ def predict_nationwide(
             }
 
         weather_df = add_history_weather(weather_df, target_time)
+        _t2 = time.time()
 
         nationwide_df["asos_id"] = nationwide_df["asos_id"].astype(str)
         weather_df["asos_id"] = weather_df["asos_id"].astype(str)
@@ -1654,7 +1656,14 @@ def predict_nationwide(
         merged["aws_거리_km"] = merged["asos_distance_m"] / 1000
         merged["hour"] = target_time.hour
 
+        _t3 = time.time()
         merged = run_event_model(merged)
+        _t4 = time.time()
+
+        print(
+            f"[TIME] 현재기상 {_t1-_t0:.1f}s / 과거6시간 {_t2-_t1:.1f}s / "
+            f"결측보간·노면온도 {_t3-_t2:.1f}s / 모델 {_t4-_t3:.1f}s"
+        )
 
         # 사전 생성된 도로 스내핑 캐시에서 보정 좌표 조회 (요청 시점 OSRM 호출 없음)
         merged = apply_snapped_coords(merged)
@@ -1707,6 +1716,64 @@ def predict_nationwide(
             "results": [],
             "top_risk": []
         }
+
+# =========================================================
+# 전국 예측 결과 캐시 + 백그라운드 미리 계산
+# 같은 요청(같은 offset, 같은 10분 구간)은 계산 결과를 그대로 돌려준다.
+# 서버가 켜지면 백그라운드에서 미리 계산해 두고 10분 구간이 바뀔 때마다 갱신한다.
+# =========================================================
+
+import threading
+
+_NATION_CACHE = {}
+_NATION_LOCK = threading.Lock()
+
+def _nation_key(offset_minutes, top_n):
+    now = now_kst()
+    return (offset_minutes, top_n, now.strftime("%Y%m%d%H"), now.minute // 10)
+
+def predict_nationwide_cached(offset_minutes=0, top_n=20):
+    key = _nation_key(offset_minutes, top_n)
+
+    hit = _NATION_CACHE.get(key)
+    if hit:
+        return hit
+
+    with _NATION_LOCK:
+        hit = _NATION_CACHE.get(key)
+        if hit:
+            return hit
+
+        result = predict_nationwide_compute(offset_minutes, top_n)
+
+        if result.get("status") == "success":
+            _NATION_CACHE[key] = result
+            if len(_NATION_CACHE) > 12:
+                for k in list(_NATION_CACHE)[:-12]:
+                    _NATION_CACHE.pop(k, None)
+
+        return result
+
+@app.get("/predict/nationwide")
+def predict_nationwide(
+    offset_minutes: int = 0,
+    top_n: int = 20
+):
+    return predict_nationwide_cached(offset_minutes, top_n)
+
+def _warmup_loop():
+    time.sleep(5)
+    while True:
+        for off in (0, 30, 60):
+            try:
+                predict_nationwide_cached(off, 9999)
+            except Exception as e:
+                print("WARMUP ERROR:", str(e))
+        time.sleep(3 * 60)
+
+@app.on_event("startup")
+def start_warmup():
+    threading.Thread(target=_warmup_loop, daemon=True).start()
 
 # =========================================================
 # 도로 스내핑 캐시 사전 생성 (1회성 CLI 실행 전용)
