@@ -1,0 +1,26 @@
+{
+  "required_columns": [
+    "x_alti_mean",
+    "x_alti_stdev",
+    "x_terrain_mean",
+    "x_aspect_sin_mean",
+    "x_aspect_cos_mean",
+    "x_aspect_resultant_length",
+    "x_flat_cell_fraction",
+    "x_air_temp_c",
+    "x_wind_direction_deg",
+    "x_wind_speed_ms",
+    "x_rain_1h_mm",
+    "x_rain_day_to_time_mm",
+    "x_relative_humidity_pct",
+    "x_temp_change_3h_c",
+    "x_rain_last_6h_mm",
+    "x_min_temp_last_6h_c",
+    "x_mean_humidity_last_3h_pct"
+  ],
+  "target_meaning": "reported_blackice_accident_vs_selected_comparison_not_observed_ice",
+  "classification_threshold": 0.5261645150550645,
+  "score_is_real_ice_probability": false,
+  "calibrated": false,
+  "risk_grade": null
+}
